@@ -1,0 +1,26 @@
+[package]
+name = "sail-aarch64-oracle"
+version = "0.1.0"
+edition = "2021"
+description = "Rust FFI oracle around the Sail arm-v9.4-a model (sail -> C++ -> Rust) for differential testing"
+# Own code is BSD-3-Clause; the compound expression reflects the vendored,
+# statically-linked components (see LICENSE). mini-gmp is the copyleft part.
+license = "BSD-3-Clause AND BSD-3-Clause-Clear AND BSD-2-Clause AND MIT AND (LGPL-3.0-or-later OR GPL-2.0-or-later)"
+build = "build.rs"
+# `links` makes Cargo enforce a single version of the native lib per build graph,
+# which matches the reality that the Sail model is global per-process state.
+links = "sailarm"
+
+[build-dependencies]
+cc = "1"
+# Pure-Rust gzip (miniz_oxide backend) to unpack vendor/model.cpp.gz at build time.
+flate2 = "1"
+
+[lib]
+name = "sail_aarch64_oracle"
+path = "src/lib.rs"
+
+# The C++ backend keeps architectural state per Oracle instance, and the Rust
+# wrapper is Send + Sync (a process-wide mutex serializes model calls), so
+# plain `cargo test` is safe. Use `cargo nextest run` for process-level
+# parallelism (the mutex serializes within a process).
