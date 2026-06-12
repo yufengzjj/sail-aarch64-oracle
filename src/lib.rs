@@ -57,6 +57,9 @@ extern "C" {
     fn oracle_get_esr_el3(h: *mut c_void) -> u64;
     fn oracle_get_elr_el3(h: *mut c_void) -> u64;
     fn oracle_get_far_el3(h: *mut c_void) -> u64;
+    fn oracle_read_mem(h: *mut c_void, addr: u64) -> u8;
+    fn oracle_write_mem(h: *mut c_void, addr: u64, byte: u8);
+    fn oracle_is_mapped(h: *mut c_void, addr: u64) -> bool;
 }
 
 /// Architectural (maximum) SVE vector width handled by the model: 2048 bits.
@@ -360,6 +363,62 @@ impl Oracle {
     pub fn far_el3(&self) -> u64 {
         let _g = model_lock();
         unsafe { oracle_get_far_el3(self.h) }
+    }
+
+    // ---- direct RAM access (byte-addressed, little-endian) -----------------
+    // Reads/writes this instance's isolated memory. Unmapped addresses read as
+    // zero; writing to a fresh page allocates it. This observes exactly what
+    // the model's loads/stores see, so you can seed memory before `step` or
+    // inspect it afterwards without issuing LDR/STR instructions.
+
+    /// Read a single byte at `addr` (0 if the page was never written).
+    pub fn read_mem_byte(&self, addr: u64) -> u8 {
+        let _g = model_lock();
+        unsafe { oracle_read_mem(self.h, addr) }
+    }
+
+    /// Write a single byte at `addr`.
+    pub fn write_mem_byte(&mut self, addr: u64, byte: u8) {
+        let _g = model_lock();
+        unsafe { oracle_write_mem(self.h, addr, byte) }
+    }
+
+    /// Fill `buf` with the bytes at `addr..addr + buf.len()`.
+    pub fn read_mem(&self, addr: u64, buf: &mut [u8]) {
+        let _g = model_lock();
+        for (i, slot) in buf.iter_mut().enumerate() {
+            *slot = unsafe { oracle_read_mem(self.h, addr.wrapping_add(i as u64)) };
+        }
+    }
+
+    /// Write `data` to memory starting at `addr`.
+    pub fn write_mem(&mut self, addr: u64, data: &[u8]) {
+        let _g = model_lock();
+        for (i, &byte) in data.iter().enumerate() {
+            unsafe { oracle_write_mem(self.h, addr.wrapping_add(i as u64), byte) }
+        }
+    }
+
+    /// Read a little-endian `u64` at `addr` (matches AArch64 byte order).
+    pub fn read_mem_u64(&self, addr: u64) -> u64 {
+        let mut b = [0u8; 8];
+        self.read_mem(addr, &mut b);
+        u64::from_le_bytes(b)
+    }
+
+    /// Write `value` as a little-endian `u64` at `addr`.
+    pub fn write_mem_u64(&mut self, addr: u64, value: u64) {
+        self.write_mem(addr, &value.to_le_bytes());
+    }
+
+    /// True iff the region containing `addr` has ever been written (a backing
+    /// block exists). Because [`read_mem_byte`](Self::read_mem_byte) returns 0
+    /// for untouched memory, this is the only way to distinguish "explicitly
+    /// wrote 0" from "never touched". Granularity is the runtime's block size
+    /// (currently 16 MiB), so a single write maps its whole containing block.
+    pub fn is_mapped(&self, addr: u64) -> bool {
+        let _g = model_lock();
+        unsafe { oracle_is_mapped(self.h, addr) }
     }
 
     /// Convenience: snapshot of X0..X30, PC and NZCV for diffing against your model.

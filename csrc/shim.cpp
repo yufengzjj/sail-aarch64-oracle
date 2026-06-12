@@ -39,6 +39,12 @@ struct tag_block;
 extern struct block *sail_memory;
 extern struct tag_block *sail_tags;
 void kill_mem(void);
+/* Byte-addressed RAM accessors over the sail_memory block list (rts.c). The
+ * model's loads/stores decompose into these, so reading/writing here observes
+ * exactly what instructions see. Little-endian: byte at `address` is the LSB. */
+uint64_t read_mem(uint64_t address);
+void write_mem(uint64_t address, uint64_t byte);
+bool sail_addr_mapped(uint64_t address);
 }
 
 namespace {
@@ -320,6 +326,29 @@ uint64_t oracle_get_far_el3(void *h) {
     OracleInstance *o = cast(h);
     MemCtx ctx(o);
     return (uint64_t)o->m.zget_far_el3(UNIT);
+}
+
+/* ---- direct RAM access (byte-addressed, little-endian) ---------------------
+ * Operates on THIS instance's memory block list. write_mem may allocate a new
+ * block, so MemCtx saves the updated head back on exit. */
+
+uint8_t oracle_read_mem(void *h, uint64_t addr) {
+    OracleInstance *o = cast(h);
+    MemCtx ctx(o);
+    return (uint8_t)read_mem(addr);
+}
+
+void oracle_write_mem(void *h, uint64_t addr, uint8_t byte) {
+    OracleInstance *o = cast(h);
+    MemCtx ctx(o);
+    write_mem(addr, (uint64_t)byte);
+}
+
+/* True iff the MASK-sized region containing `addr` has a backing block. */
+bool oracle_is_mapped(void *h, uint64_t addr) {
+    OracleInstance *o = cast(h);
+    MemCtx ctx(o);
+    return sail_addr_mapped(addr);
 }
 
 } // extern "C"

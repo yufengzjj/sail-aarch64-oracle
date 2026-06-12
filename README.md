@@ -63,7 +63,7 @@ SME/SME2, LSE atomics, MTE):
 | Category | Notes | Covered by tests |
 |---|---|---|
 | Base integer | arith/logic/bitfield/branch/CSEL… | ADD/SUB |
-| Loads/stores | incl. SP-relative, exclusives, atomics, pairs | STR/LDR round-trips |
+| Loads/stores | incl. SP-relative, exclusives, atomics, pairs | STR/LDR round-trips; direct RAM API matches |
 | FP scalar & AdvSIMD | FPCR rounding, FPSR flag accumulation | FADD, FDIV→DZC |
 | SVE/SVE2 | VL = 2048 b, predicates, FFR | ADD Z.D, PTRUE, RDFFR |
 | SME/SME2 | streaming mode, ZA, ZT0; SVL = 2048 b | SMSTART, ZERO {ZA} |
@@ -79,7 +79,7 @@ State access API (everything a diff harness can set/observe):
 | FPCR, FPSR | `set_fpcr/get_fpcr`, `set_fpsr/get_fpsr` |
 | ZA (256×2048 b), ZT0 (512 b), SVCR | `set_za_row/get_za_row`, `set_zt0/get_zt0`, `svcr()` |
 | TPIDR_EL0, TPIDRRO_EL0 | get/set |
-| Memory | exercised via load/store instructions (per-instance, zero-filled on demand) |
+| Memory (per-instance, byte-addressed, little-endian) | `read_mem_byte/write_mem_byte`, `read_mem/write_mem` (slices), `read_mem_u64/write_mem_u64`, `is_mapped(addr)` |
 | Exception diagnosis | `esr_el3()`, `elr_el3()`, `far_el3()` (read-only) |
 
 ## Boundaries & limitations
@@ -108,8 +108,8 @@ State access API (everything a diff harness can set/observe):
   redistributing binaries.
 
 > ✅ Verified (2026-06, Sail 0.20.1, sail-arm master) on Linux/musl and
-> Windows 11 MSVC — 12 tests, including multi-instance independence, memory
-> isolation and cross-thread stress. Non-obvious toolchain findings (Sail
+> Windows 11 MSVC — 13 tests, including multi-instance independence, memory
+> isolation, direct-RAM/instruction agreement and cross-thread stress. Non-obvious toolchain findings (Sail
 > DCE needs `--c-preserve`, `z`→`zz` name mangling, four cpp-backend bugs
 > auto-fixed by `scripts/fix_cpp_model.py`, an LLP64 64-bit-truncation bug
 > in the Sail runtime on Windows) are documented in the build steps below
@@ -379,8 +379,12 @@ proptest! {
 
 Loads/stores work out of the box at reset state (EL3, MMU off, flat physical
 mapping) — `memory_is_per_instance` exercises `STR`/`LDR` round-trips and
-cross-instance isolation at `0x8000_0000`. Memory reads of never-written
-addresses return zeroed pages (the runtime allocates blocks on demand).
+cross-instance isolation at `0x8000_0000`. Memory can also be seeded and
+inspected **directly by address** (`write_mem_u64`/`read_mem_u64` and friends),
+observing exactly what instructions see — `direct_memory_access_matches_instructions`
+cross-checks the two paths. Reads of never-written addresses return 0 without
+allocating; `is_mapped(addr)` tells "wrote 0" apart from "never touched"
+(at the runtime's 16 MiB block granularity).
 
 ---
 

@@ -123,6 +123,48 @@ fn memory_is_per_instance() {
     assert_eq!(a.get_x(2), 0xDEAD_BEEF_CAFE_F00D, "A still sees its value");
 }
 
+/// Direct byte-addressed memory access agrees with what instructions see:
+/// a value seeded via the API is loaded by LDR, and a value stored by STR is
+/// read back through the API. Confirms little-endian byte order both ways.
+#[test]
+fn direct_memory_access_matches_instructions() {
+    const ADDR: u64 = 0x8000_0000;
+
+    let mut cpu = Oracle::new();
+
+    // Seed memory directly, then have an instruction load it.
+    cpu.write_mem_u64(ADDR, 0x0123_4567_89AB_CDEF);
+    cpu.set_x(1, ADDR);
+    cpu.step(LDR_X2_X1);
+    assert_eq!(cpu.get_x(2), 0x0123_4567_89AB_CDEF, "LDR sees API-written value");
+
+    // Little-endian: byte at ADDR is the LSB.
+    assert_eq!(cpu.read_mem_byte(ADDR), 0xEF);
+    assert_eq!(cpu.read_mem_byte(ADDR + 7), 0x01);
+
+    // Now store via an instruction and read it back through the API.
+    cpu.set_x(0, 0xFEED_FACE_DEAD_C0DE);
+    cpu.step(STR_X0_X1);
+    assert_eq!(cpu.read_mem_u64(ADDR), 0xFEED_FACE_DEAD_C0DE, "API sees STR value");
+
+    // Unwritten memory reads back as zero.
+    assert_eq!(cpu.read_mem_u64(0x9000_0000), 0);
+
+    // is_mapped distinguishes "wrote 0" from "never touched": both read 0.
+    assert!(cpu.is_mapped(ADDR), "written region is mapped");
+    assert!(!cpu.is_mapped(0xA000_0000), "untouched region is not mapped");
+    cpu.write_mem_u64(0xA000_0000, 0);
+    assert_eq!(cpu.read_mem_u64(0xA000_0000), 0);
+    assert!(cpu.is_mapped(0xA000_0000), "explicit zero write maps the region");
+
+    // Block read/write round-trips.
+    let bytes = [1u8, 2, 3, 4, 5, 6, 7, 8];
+    cpu.write_mem(ADDR + 0x100, &bytes);
+    let mut out = [0u8; 8];
+    cpu.read_mem(ADDR + 0x100, &mut out);
+    assert_eq!(out, bytes);
+}
+
 /// ADD Z0.D, Z1.D, Z2.D  (SVE unpredicated vector add, 64-bit elements)
 ///   00000100 size=11 1 Zm=00010 000000 Zn=00001 Zd=00000
 const ADD_Z0_Z1_Z2_D: u32 = 0x04E2_0020;

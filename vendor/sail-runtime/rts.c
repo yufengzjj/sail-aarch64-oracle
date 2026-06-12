@@ -56,7 +56,6 @@
 
 #include "sail.h"
 #include "rts.h"
-#include "elf.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -178,6 +177,27 @@ uint64_t read_mem(uint64_t address)
   }
 
   return 0x00;
+}
+
+/*
+ * True iff a backing block has been allocated for `address` (i.e. some byte in
+ * the same MASK-sized region was written). read_mem returns 0 for unmapped
+ * addresses, so this is the only way to tell "explicitly wrote 0" apart from
+ * "never touched". Not part of stock Sail rts; added for the oracle.
+ */
+bool sail_addr_mapped(uint64_t address)
+{
+  uint64_t mask = address & ~MASK;
+  struct block *current = sail_memory;
+
+  while (current != NULL) {
+    if (current->block_id == mask) {
+      return true;
+    }
+    current = current->next;
+  }
+
+  return false;
 }
 
 unit write_tag_bool(const uint64_t address, const bool tag)
