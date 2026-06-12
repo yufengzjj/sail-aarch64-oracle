@@ -170,6 +170,9 @@ fn direct_memory_access_matches_instructions() {
 const ADD_Z0_Z1_Z2_D: u32 = 0x04E2_0020;
 /// PTRUE P0.B  (all elements active)
 const PTRUE_P0_B: u32 = 0x2518_E3E0;
+/// BFMMLA Z0.S, Z1.H, Z2.H  (BF16 2x2 matrix multiply-accumulate, FEAT_BF16)
+///   01100100 011 Zm=00010 111001 Zn=00001 Zda=00000
+const BFMMLA_Z0_Z1_Z2: u32 = 0x6462_E420;
 
 #[test]
 fn sve_add_vectors() {
@@ -191,6 +194,34 @@ fn sve_add_vectors() {
     // Sources untouched.
     assert_eq!(cpu.get_z(1).as_slice(), z1.as_slice());
     assert_eq!(cpu.get_z(2).as_slice(), z2.as_slice());
+}
+
+/// BF16 matrix-multiply-accumulate: the heaviest exact-rational FP path in the
+/// model (per 128-bit segment: 2x4 . 4x2 BF16 dot products into 2x2 fp32). With
+/// every BF16 input = 1.0 and the accumulator zeroed, each output fp32 lane is
+/// the dot product of a row of ones with a column of ones = 1+1+1+1 = 4.0,
+/// exactly, in every one of the 16 segments at VL=2048.
+#[test]
+fn sve_bf16_matmul() {
+    let mut cpu = Oracle::new();
+    assert_eq!(cpu.vl_bits(), 2048, "init_harness requests max VL");
+
+    // BF16 1.0 = 0x3F80 (top 16 bits of fp32 1.0); four per 64-bit chunk.
+    let ones_bf16 = vec![0x3F80_3F80_3F80_3F80u64; Z_CHUNKS];
+    cpu.set_z(1, &ones_bf16);
+    cpu.set_z(2, &ones_bf16);
+    cpu.set_z(0, &[0u64; Z_CHUNKS]); // accumulator must start at 0
+
+    cpu.step(BFMMLA_Z0_Z1_Z2);
+
+    // fp32 4.0 = 0x40800000; two lanes per 64-bit chunk, all chunks identical.
+    let z0 = cpu.get_z(0);
+    for i in 0..Z_CHUNKS {
+        assert_eq!(z0[i], 0x4080_0000_4080_0000, "Z0 chunk {i} = two fp32 4.0");
+    }
+    // Sources untouched.
+    assert_eq!(cpu.get_z(1).as_slice(), ones_bf16.as_slice());
+    assert_eq!(cpu.get_z(2).as_slice(), ones_bf16.as_slice());
 }
 
 /// Runtime VL change: programming ZCR_EL3.LEN (via set_vl) is observable and

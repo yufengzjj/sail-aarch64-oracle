@@ -8,6 +8,9 @@
 //!   SAIL_LIB_DIR   external (opam) Sail runtime dir; implies system GMP + zlib
 //!   SAIL_SYSTEM_GMP=1  link real libgmp instead of bundled mini-gmp
 //!   GMP_LIB_DIR / ZLIB_LIB_DIR / GMP_LIB_NAME / ZLIB_LIB_NAME  link tweaks
+//! The native model/runtime is force-built at >= -O2 (the exact-rational FP
+//! paths are unusably slow at -O0); SAIL_MODEL_DEBUG=1 inherits the cargo
+//! profile's own opt-level instead, for a fast unoptimized compile.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -40,7 +43,7 @@ fn unpack_vendored_model(vendor: &Path) -> PathBuf {
 }
 
 fn main() {
-    for key in ["SAIL_MODEL_C", "SAIL_LIB_DIR", "SAIL_MODEL_INC", "SAIL_SYSTEM_GMP"] {
+    for key in ["SAIL_MODEL_C", "SAIL_LIB_DIR", "SAIL_MODEL_INC", "SAIL_SYSTEM_GMP", "SAIL_MODEL_DEBUG"] {
         println!("cargo:rerun-if-env-changed={key}");
     }
 
@@ -68,7 +71,25 @@ fn main() {
         .unwrap_or_else(|_| vendor.join("sail-runtime"));
     assert!(sail_lib.is_dir(), "Sail runtime dir does not exist: {sail_lib:?}");
 
-    let warning_flags = |b: &mut cc::Build| {
+    // Floor the native model/runtime at -O2 even in dev builds: at the cargo
+    // dev profile's -O0 the exact-rational FP paths (hundreds of mpq ops per
+    // instruction) run ~20-50x slower, and this generated code is never
+    // single-stepped, so there is no reason to leave it unoptimized.
+    // SAIL_MODEL_DEBUG=1 opts out (inherit the profile's level verbatim) for a
+    // fast unoptimized compile when runtime speed doesn't matter.
+    // Otherwise pass through anything already >= -O2 (2/3) or a size level
+    // (s/z), and bump 0/1 (or an unset/empty value) up to -O2.
+    let model_opt = if env::var_os("SAIL_MODEL_DEBUG").is_some() {
+        env::var("OPT_LEVEL").unwrap_or_else(|_| "0".to_string())
+    } else {
+        match env::var("OPT_LEVEL").as_deref() {
+            Ok("2") | Ok("3") | Ok("s") | Ok("z") => env::var("OPT_LEVEL").unwrap(),
+            _ => "2".to_string(),
+        }
+    };
+
+    let common_flags = |b: &mut cc::Build| {
+        b.opt_level_str(&model_opt);
         // Sail-generated code is not warning-clean; keep logs readable.
         b.flag_if_supported("-Wno-unused")
             .flag_if_supported("-Wno-unused-parameter")
@@ -98,7 +119,7 @@ fn main() {
     if missing.is_file() {
         cxx.file(missing);
     }
-    warning_flags(&mut cxx);
+    common_flags(&mut cxx);
     if system_gmp {
         cxx.define("SAIL_SYSTEM_GMP", None); // sail.h: include <gmp.h>
     }
@@ -110,7 +131,7 @@ fn main() {
         .flag_if_supported("/std:c11") // timespec_get etc. under MSVC
         .file(sail_lib.join("sail.c"))
         .file(sail_lib.join("rts.c"));
-    warning_flags(&mut crt);
+    common_flags(&mut crt);
     // Sail >= 0.18 split the runtime: sail_assert (sail_failure.c) and
     // sail_config.c (needs cJSON.c) are referenced by the generated code.
     for extra in ["sail_failure.c", "sail_config.c", "cJSON.c"] {
