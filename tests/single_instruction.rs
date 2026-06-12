@@ -193,6 +193,44 @@ fn sve_add_vectors() {
     assert_eq!(cpu.get_z(2).as_slice(), z2.as_slice());
 }
 
+/// Runtime VL change: programming ZCR_EL3.LEN (via set_vl) is observable and
+/// makes the SVE element count shrink, without disturbing GPRs or PC.
+#[test]
+fn vector_length_is_runtime_settable() {
+    let mut cpu = Oracle::new();
+    assert_eq!(cpu.vl_bits(), 2048, "reset requests max VL");
+
+    // Scratch GPR + PC must survive a set_vl.
+    cpu.set_x(0, 0xDEAD_BEEF_0000_0001);
+    cpu.set_pc(0x8000_0000);
+
+    for (req, expect) in [(128u32, 128u64), (256, 256), (512, 512), (1024, 1024), (2048, 2048)] {
+        let eff = cpu.set_vl(req);
+        assert_eq!(eff, expect, "set_vl({req}) -> {expect} b");
+        assert_eq!(cpu.vl_bits(), expect);
+    }
+
+    assert_eq!(cpu.get_x(0), 0xDEAD_BEEF_0000_0001, "X0 preserved across set_vl");
+    assert_eq!(cpu.get_pc(), 0x8000_0000, "PC preserved across set_vl");
+
+    // At VL=256 b a .D vector has 256/64 = 4 active lanes; lanes above that are
+    // not written by an unpredicated 64-bit ADD.
+    cpu.set_vl(256);
+    let z1: Vec<u64> = (0..Z_CHUNKS as u64).map(|i| 0x100 + i).collect();
+    let z2: Vec<u64> = (0..Z_CHUNKS as u64).map(|i| 0x200 + i).collect();
+    cpu.set_z(0, &vec![0u64; Z_CHUNKS]);
+    cpu.set_z(1, &z1);
+    cpu.set_z(2, &z2);
+    cpu.step(ADD_Z0_Z1_Z2_D);
+    let z0 = cpu.get_z(0);
+    for i in 0..4 {
+        assert_eq!(z0[i], z1[i] + z2[i], "lane {i} active at VL=256");
+    }
+    for i in 4..Z_CHUNKS {
+        assert_eq!(z0[i], 0, "lane {i} inactive at VL=256");
+    }
+}
+
 #[test]
 fn sve_predicates() {
     let mut cpu = Oracle::new();

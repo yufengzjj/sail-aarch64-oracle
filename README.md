@@ -65,7 +65,7 @@ SME/SME2, LSE atomics, MTE):
 | Base integer | arith/logic/bitfield/branch/CSEL… | ADD/SUB |
 | Loads/stores | incl. SP-relative, exclusives, atomics, pairs | STR/LDR round-trips; direct RAM API matches |
 | FP scalar & AdvSIMD | FPCR rounding, FPSR flag accumulation | FADD, FDIV→DZC |
-| SVE/SVE2 | VL = 2048 b, predicates, FFR | ADD Z.D, PTRUE, RDFFR |
+| SVE/SVE2 | VL = 2048 b (runtime-settable), predicates, FFR | ADD Z.D, PTRUE, RDFFR, set_vl |
 | SME/SME2 | streaming mode, ZA, ZT0; SVL = 2048 b | SMSTART, ZERO {ZA} |
 | System | MRS/MSR, hints, barriers, exception-generating | MRS/MSR TPIDR_EL0, UDF |
 
@@ -75,7 +75,8 @@ State access API (everything a diff harness can set/observe):
 |---|---|
 | X0–X30, SP, PC, NZCV | `set_x/get_x`, `set_sp/get_sp`, `set_pc/get_pc`, `set_nzcv/get_nzcv` |
 | PSTATE (DAIF/BTYPE/SSBS/PAN/UAO/DIT/TCO/SPSel; EL/SM/ZA read-only) | `set_pstate/get_pstate` (packed word) |
-| Z0–Z31 (2048 b), P0–P15 (256 b), FFR | `set_z/get_z`, `set_p/get_p`, `set_ffr/get_ffr`; `vl_bits()` |
+| Z0–Z31 (2048 b), P0–P15 (256 b), FFR | `set_z/get_z`, `set_p/get_p`, `set_ffr/get_ffr` |
+| Vector length (VL / streaming SVL) | `vl_bits()` (read); `set_vl(bits)`, `set_svl(bits)` (program ZCR/SMCR.LEN at runtime) |
 | FPCR, FPSR | `set_fpcr/get_fpcr`, `set_fpsr/get_fpsr` |
 | ZA (256×2048 b), ZT0 (512 b), SVCR | `set_za_row/get_za_row`, `set_zt0/get_zt0`, `svcr()` |
 | TPIDR_EL0, TPIDRRO_EL0 | get/set |

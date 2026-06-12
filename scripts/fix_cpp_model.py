@@ -1,40 +1,33 @@
 #!/usr/bin/env python3
-"""Fix Sail 0.20.1 `--cpp` backend output (run on the generated model.h).
-
-The C++ backend has three rough edges on large models like arm-v9.4-a:
-
-1. Some method declarations are emitted TWICE inside the class body
-   (`zeq_anyzIE...` equality helpers). Duplicate prototypes are valid C but
-   an error in a C++ class. -> drop exact duplicate declaration lines.
-
-2. A set of small prelude functions is declared in the class and called from
-   the generated code, but their definitions are never emitted (the C backend
-   inlines them; the C++ backend loses them): the per-enum `zeq_anyzIE<E>z5zK`
-   equality helpers plus zUInt0 / zediv_nat / zemod_nat / zappend_str /
-   zputchar / zeq_anyzIrzK. -> generate `model_missing.cpp` next to model.h
-   with the obvious bodies (skipping any that model.cpp does define).
-
-3. It emits calls to `sint` / `sub_vec_int` where the C backend emits
-   `sail_signed` / `sub_bits_int`. Handled by inline aliases in
-   vendor/sail-runtime/sail.h (CPP-BACKEND PATCH), not here.
-
-4. The ~250k GMP scratch temporaries (zghz3*) are FILE-SCOPE GLOBALS shared
-   by all instances, yet every instance's model_init()/model_fini() runs the
-   startup_z*()/finish_z*() calls that CREATE/KILL them — so destroying one
-   instance frees the scratch out from under the others (use-after-free).
-   -> patch model.cpp to run the startup block only for the first live
-   instance and the finish block only for the last one (refcounted), while
-   keeping the per-instance parts (exception state, let-bindings, register
-   initialization, member KILLs) untouched.
+"""Work around Sail 0.20.1 `--cpp` backend bugs on large models (arm-v9.4-a).
 
 Usage: fix_cpp_model.py path/to/model.h path/to/model.cpp
+
+Four fixes, each for a thing the C++ backend gets wrong:
+
+1. Some method declarations are emitted TWICE in the class body — valid C, but
+   a C++ error. -> drop exact duplicate declaration lines.
+
+2. Some prelude methods are declared and called but never defined (the C
+   backend inlines them; the C++ backend loses them): per-enum
+   `zeq_anyzIE<E>z5zK` plus zUInt0/zediv_nat/zemod_nat/zappend_str/zputchar/
+   zeq_anyzIrzK. -> emit model_missing.cpp with the obvious bodies.
+
+3. Calls `sint`/`sub_vec_int` instead of `sail_signed`/`sub_bits_int` — handled
+   by aliases in vendor/sail-runtime/sail.h, not here.
+
+4. CRITICAL use-after-free: the ~250k GMP scratch temporaries (zghz3*) are
+   file-scope globals, but every instance's model_init/model_fini runs the
+   startup_z*/finish_z* calls that create/kill them — so freeing one instance
+   pulls the scratch out from under the others. -> guard the startup block to
+   the first live instance and finish to the last (refcounted), leaving the
+   per-instance parts untouched.
 """
 import os
 import re
 import sys
 
-# name -> (declaration regex on model.h line, body template)
-SPECIALS = {
+SPECIALS = {  # name -> (decl regex, body template)
     "zUInt0": (
         r"void zUInt0\(sail_int \*rop, lbits\);",
         "void Model::zUInt0(sail_int *rop, lbits op)\n"
@@ -71,7 +64,6 @@ ENUM_EQ = re.compile(r"^\s+bool (zeq_anyzIE[A-Za-z_0-9]+z5zK)\(enum (z[A-Za-z_0-
 
 
 def dedup_header(path: str) -> list[str]:
-    """Drop duplicate declaration lines in class bodies; return kept lines."""
     seen = set()
     out = []
     dropped = 0
@@ -95,7 +87,7 @@ def dedup_header(path: str) -> list[str]:
 
 
 def gen_missing(header_lines: list[str], header_path: str, cpp_path: str) -> None:
-    # Names that model.cpp DOES define (scan definition lines only, cheap).
+    # Skip any name model.cpp already defines.
     defined = set()
     defn = re.compile(r"^[a-z][a-z_0-9 ]*\**\s*Model::(z[A-Za-z_0-9]+)\(")
     for line in open(cpp_path):
@@ -140,13 +132,13 @@ GUARD_DECL = "static int sail_scratch_refs = 0; /* fix_cpp_model.py */\n"
 
 
 def refcount_scratch(cpp_path: str) -> None:
-    """Wrap global-scratch startup/finish call runs in first/last-instance guards."""
+    """Guard the global-scratch startup/finish runs to first/last instance."""
     tmp_path = cpp_path + ".tmp"
-    in_fn = None  # None | "init" | "fini"
+    in_fn = None  # state machine: None | "init" | "fini"
     runs_wrapped = 0
     already = False
     with open(cpp_path) as src, open(tmp_path, "w") as dst:
-        pending = []  # buffered run of startup/finish lines
+        pending = []
 
         def flush(cond: str) -> None:
             nonlocal runs_wrapped
