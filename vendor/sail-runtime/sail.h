@@ -130,6 +130,38 @@ static inline int sail_mpz_cmp_i64(const mpz_t a, int64_t b)
   return (mb > ma) - (mb < ma);      /* both negative: bigger |.| is smaller */
 }
 
+/* Arithmetic *_ui entry points ALSO take a 32-bit `unsigned long` on LLP64, so a
+ * 64-bit operand is truncated. This silently corrupted append_64() (which builds
+ * every >64-bit bitvector literal in the generated model, e.g. the AES S-box) by
+ * dropping the high 32 bits of each appended chunk. Route the data-carrying ones
+ * through a 64-bit temporary. */
+static inline void sail_mpz_add_u64(mpz_t r, const mpz_t a, uint64_t x)
+{
+  mpz_t t;
+  mpz_init(t);
+  sail_mpz_set_u64(t, x);
+  mpz_add(r, a, t);
+  mpz_clear(t);
+}
+
+static inline void sail_mpz_sub_u64(mpz_t r, const mpz_t a, uint64_t x)
+{
+  mpz_t t;
+  mpz_init(t);
+  sail_mpz_set_u64(t, x);
+  mpz_sub(r, a, t);
+  mpz_clear(t);
+}
+
+static inline void sail_mpz_mul_u64(mpz_t r, const mpz_t a, uint64_t x)
+{
+  mpz_t t;
+  mpz_init(t);
+  sail_mpz_set_u64(t, x);
+  mpz_mul(r, a, t);
+  mpz_clear(t);
+}
+
 /* A system <gmp.h> defines these as macros (-> __gmpz_*); undef before our
  * 64-bit-safe redirect so it wins without a redefinition warning. No-op for
  * mini-gmp (plain function decls). */
@@ -141,6 +173,12 @@ static inline int sail_mpz_cmp_i64(const mpz_t a, int64_t b)
 #undef mpz_cmp_si
 #undef mpz_init_set_ui
 #undef mpz_init_set_si
+#undef mpz_add_ui
+#undef mpz_sub_ui
+#undef mpz_mul_ui
+#define mpz_add_ui(r, a, x) sail_mpz_add_u64((r), (a), (uint64_t)(x))
+#define mpz_sub_ui(r, a, x) sail_mpz_sub_u64((r), (a), (uint64_t)(x))
+#define mpz_mul_ui(r, a, x) sail_mpz_mul_u64((r), (a), (uint64_t)(x))
 #define mpz_set_ui(r, x) sail_mpz_set_u64((r), (uint64_t)(x))
 #define mpz_set_si(r, x) sail_mpz_set_i64((r), (int64_t)(x))
 #define mpz_get_ui(x) sail_mpz_get_u64(x)

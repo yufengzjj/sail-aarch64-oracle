@@ -309,6 +309,45 @@ fn bench_fclamp() {
     }
 }
 
+/// AESE V0.16B, V1.16B  (AES single round encrypt: SubBytes(ShiftRows(V0^V1)))
+///   llvm-mc -mattr=+aes: [0x20,0x48,0x28,0x4e]
+const AESE_V0_V1: u32 = 0x4E28_4820;
+
+/// AES single-round encrypt. Reproduces a downstream differential-test case:
+/// state=0, key=0x3d8e163fc. AESE has no MixColumns and AddRoundKey is FIRST, so
+/// result = SubBytes(ShiftRows(state ^ key)); with state=0, = SubBytes(ShiftRows(key)).
+/// Expected (AES-checked) q0 = 0x6363fb6363f863636163637b636363b0.
+///
+/// REGRESSION: an LLP64 bug in append_64() (mpz_add_ui truncates the 64-bit
+/// chunk to 32 bits on Windows) zeroed the high 4 bytes of every 64-bit group in
+/// large bit-vector constants — including the AES S-box — so S-box lookups with
+/// index%8 >= 4 (e.g. 0xfc, 0xff) returned 0. Fixed in vendor/sail-runtime/sail.h.
+#[test]
+fn aese_single_round() {
+    let mut cpu = Oracle::new();
+
+    cpu.set_z(0, &[0x0, 0x0]); // state = 0
+    cpu.set_z(1, &[0x3_d8e1_63fc, 0x0]); // key
+    cpu.step(AESE_V0_V1);
+
+    let z0 = cpu.get_z(0);
+    assert_eq!(z0[0], 0x6163_637b_6363_63b0, "AESE low 64 (byte0 = S(0xfc) = 0xb0)");
+    assert_eq!(z0[1], 0x6363_fb63_63f8_6363, "AESE high 64");
+
+    // Exercise S-box lookups across all four byte-positions of a 64-bit group,
+    // incl. the high half that the append_64 bug used to zero (0xfc, 0xfd, 0xff).
+    // With state=0 and only key byte0 set, result byte0 = S-box(key_byte0).
+    for (k0, want) in [
+        (0x00u8, 0x63u8), (0x01, 0x7c), (0x53, 0xed), (0x7f, 0xd2),
+        (0xf8, 0x41), (0xfc, 0xb0), (0xfd, 0x54), (0xfe, 0xbb), (0xff, 0x16),
+    ] {
+        cpu.set_z(0, &[0x0, 0x0]);
+        cpu.set_z(1, &[k0 as u64, 0x0]);
+        cpu.step(AESE_V0_V1);
+        assert_eq!(cpu.get_z(0)[0] as u8, want, "AESE S-box({k0:#04x})");
+    }
+}
+
 /// Runtime VL change: programming ZCR_EL3.LEN (via set_vl) is observable and
 /// makes the SVE element count shrink, without disturbing GPRs or PC.
 #[test]
