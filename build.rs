@@ -50,9 +50,76 @@ fn unpack_vendored_model(vendor: &Path) -> PathBuf {
     out
 }
 
-/// True if `dir` holds a linkable gmp (any platform's naming).
-fn gmp_lib_present(dir: &Path) -> bool {
-    for name in ["gmp.lib", "libgmp.a", "libgmp.so", "libgmp.dylib"] {
+/// Inspect a `!<arch>` archive (`*.lib`/`*.a`) and report whether it is a real
+/// static library rather than a DLL import library. MSVC names both `*.lib`, so
+/// the filename can't tell them apart — only the content can. Two import-lib
+/// signatures are checked, covering both formats Windows uses:
+///   * *short* import (classic MSVC `lib`): members begin with the IMPORT_OBJECT
+///     magic `00 00 FF FF` (Machine = UNKNOWN, Sig2 = 0xFFFF);
+///   * *long* import (dlltool/lld style, e.g. vcpkg's gmp): members are ordinary
+///     COFF objects but every member is *named after the DLL* (`*.dll`), which is
+///     also recorded in the `//` long-names table.
+/// A static archive's members are `*.o`/`*.obj` and reference no DLL. Returns
+/// Some(true)=static, Some(false)=import lib, or None if the file isn't a
+/// parseable archive (the caller then trusts it rather than false-rejecting).
+fn archive_is_static(lib: &Path) -> Option<bool> {
+    const MAGIC: &[u8] = b"!<arch>\n";
+    let data = std::fs::read(lib).ok()?;
+    if !data.starts_with(MAGIC) {
+        return None; // not an ar archive (e.g. a bare .so handed to us)
+    }
+    let dll_named = |s: &str| s.trim_end_matches('/').to_ascii_lowercase().ends_with(".dll");
+    let mut pos = MAGIC.len();
+    let mut saw_real_member = false;
+    while pos + 60 <= data.len() {
+        let header = &data[pos..pos + 60];
+        let name = std::str::from_utf8(&header[0..16]).ok()?.trim_end();
+        let size: usize = std::str::from_utf8(&header[48..58]).ok()?.trim().parse().ok()?;
+        let body = pos + 60;
+        let end = body.checked_add(size)?;
+        if end > data.len() {
+            return None;
+        }
+        let bytes = &data[body..end];
+        if name == "//" {
+            // Long-names table: a DLL name parked here means a (long) import lib.
+            if bytes.windows(4).any(|w| w.eq_ignore_ascii_case(b".dll")) {
+                return Some(false);
+            }
+        } else if !(name.is_empty() || name == "/") {
+            saw_real_member = true;
+            if bytes.starts_with(&[0x00, 0x00, 0xFF, 0xFF]) || dll_named(name) {
+                return Some(false);
+            }
+        }
+        pos = end + (size & 1); // members are 2-byte aligned
+    }
+    if saw_real_member {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// True if `dir` holds a linkable gmp (any platform's naming). When `static_only`
+/// (the `system-gmp-static` path), require a static archive — a `.so`/`.dylib`-only
+/// prefix won't satisfy a `static=gmp` link, and a `*.lib` that's actually a DLL
+/// import library is rejected via `archive_is_static` (an unparseable archive is
+/// trusted rather than false-rejected) so discovery keeps scanning for a real one.
+fn gmp_lib_present(dir: &Path, static_only: bool) -> bool {
+    for name in ["gmp.lib", "libgmp.a"] {
+        let p = dir.join(name);
+        if p.is_file() {
+            if static_only && archive_is_static(&p) == Some(false) {
+                continue;
+            }
+            return true;
+        }
+    }
+    if static_only {
+        return false;
+    }
+    for name in ["libgmp.so", "libgmp.dylib"] {
         if dir.join(name).is_file() {
             return true;
         }
@@ -78,7 +145,7 @@ fn find_dir_in_env(var: &str, pred: impl Fn(&Path) -> bool) -> Option<PathBuf> {
 /// (`/lib`), and the sibling `<dir>/../include` (`/../lib`) — so it works
 /// whether a bin/ or the prefix is on PATH, or (common on Windows) the include/
 /// and lib/ dirs themselves are, even as separate PATH entries.
-fn scan_path_for_gmp() -> (Option<PathBuf>, Option<PathBuf>) {
+fn scan_path_for_gmp(static_only: bool) -> (Option<PathBuf>, Option<PathBuf>) {
     let path = match env::var_os("PATH") {
         Some(p) => p,
         None => return (None, None),
@@ -95,7 +162,7 @@ fn scan_path_for_gmp() -> (Option<PathBuf>, Option<PathBuf>) {
         if lib.is_none() {
             let mut cands = vec![dir.join("lib")];
             cands.extend(sibling.as_ref().map(|p| p.join("lib")));
-            lib = cands.into_iter().find(|c| gmp_lib_present(c));
+            lib = cands.into_iter().find(|c| gmp_lib_present(c, static_only));
         }
         if inc.is_some() && lib.is_some() {
             break;
@@ -108,7 +175,7 @@ fn scan_path_for_gmp() -> (Option<PathBuf>, Option<PathBuf>) {
 /// two may be different entries). Catches installs that don't follow the
 /// bin/include/lib prefix convention — anything that just dumped the files into
 /// a dir that happens to be on PATH.
-fn scan_path_flat() -> (Option<PathBuf>, Option<PathBuf>) {
+fn scan_path_flat(static_only: bool) -> (Option<PathBuf>, Option<PathBuf>) {
     let path = match env::var_os("PATH") {
         Some(p) => p,
         None => return (None, None),
@@ -119,7 +186,7 @@ fn scan_path_flat() -> (Option<PathBuf>, Option<PathBuf>) {
         if inc.is_none() && dir.join("gmp.h").is_file() {
             inc = Some(dir.clone());
         }
-        if lib.is_none() && gmp_lib_present(&dir) {
+        if lib.is_none() && gmp_lib_present(&dir, static_only) {
             lib = Some(dir.clone());
         }
         if inc.is_some() && lib.is_some() {
@@ -180,12 +247,14 @@ fn main() {
     let (gmp_include, gmp_lib_dir) = if explicit_include.is_some() || explicit_lib.is_some() {
         (explicit_include, explicit_lib)
     } else if system_gmp {
-        let (s_inc, s_lib) = scan_path_for_gmp();
-        let (f_inc, f_lib) = scan_path_flat();
+        let (s_inc, s_lib) = scan_path_for_gmp(gmp_static);
+        let (f_inc, f_lib) = scan_path_flat(gmp_static);
         let inc = find_dir_in_env("INCLUDE", |d| d.join("gmp.h").is_file())
             .or(s_inc)
             .or(f_inc);
-        let lib = find_dir_in_env("LIB", gmp_lib_present).or(s_lib).or(f_lib);
+        let lib = find_dir_in_env("LIB", |d| gmp_lib_present(d, gmp_static))
+            .or(s_lib)
+            .or(f_lib);
         (inc, lib)
     } else {
         (None, None)
@@ -314,6 +383,25 @@ fn main() {
     }
     if system_gmp {
         let gmp = env::var("GMP_LIB_NAME").unwrap_or_else(|_| "gmp".into());
+        // Discovery already skips import libs, but an explicit GMP_DIR/GMP_LIB_DIR
+        // bypasses it — verify the resolved archive really is static, else the
+        // `static=` link would silently still depend on gmp's DLL at runtime. If
+        // the lib dir is unknown (relying on the toolchain default), it can't be
+        // located to inspect, so this is best-effort.
+        if gmp_static {
+            if let Some(dir) = &gmp_lib_dir {
+                for cand in [format!("{gmp}.lib"), format!("lib{gmp}.a")] {
+                    let p = dir.join(&cand);
+                    if p.is_file() && archive_is_static(&p) == Some(false) {
+                        panic!(
+                            "system-gmp-static requested but {p:?} is a DLL import library, not \
+                             a static archive — linking it would still need gmp's DLL at runtime. \
+                             Point at a static libgmp (e.g. vcpkg x64-windows-static)."
+                        );
+                    }
+                }
+            }
+        }
         let kind = if gmp_static { "static=" } else { "" };
         println!("cargo:rustc-link-lib={kind}{gmp}");
     }
