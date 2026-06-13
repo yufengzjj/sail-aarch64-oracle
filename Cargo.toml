@@ -11,6 +11,16 @@ build = "build.rs"
 # which matches the reality that the Sail model is global per-process state.
 links = "sailarm"
 
+[features]
+default = []
+# Link the system libgmp instead of the bundled mini-gmp (faster exact-rational
+# FP, ~3-6x). Auto-discovered: GMP_DIR env, else a scan of PATH for a prefix
+# with include/gmp.h + a gmp lib, else the toolchain's default search paths.
+# Equivalent to setting SAIL_SYSTEM_GMP=1. Correct on Windows too (sail.h LLP64).
+system-gmp = []
+# Same, but link libgmp statically (no runtime gmp DLL/.so to ship).
+system-gmp-static = ["system-gmp"]
+
 [build-dependencies]
 cc = "1"
 # Pure-Rust gzip (miniz_oxide backend) to unpack vendor/model.cpp.gz at build time.

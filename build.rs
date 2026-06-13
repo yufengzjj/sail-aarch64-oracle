@@ -6,8 +6,16 @@
 //!   SAIL_MODEL_C   path to the generated model .cpp
 //!   SAIL_MODEL_INC extra include dir (default: dir of SAIL_MODEL_C)
 //!   SAIL_LIB_DIR   external (opam) Sail runtime dir; implies system GMP + zlib
-//!   SAIL_SYSTEM_GMP=1  link real libgmp instead of bundled mini-gmp
-//!   GMP_LIB_DIR / ZLIB_LIB_DIR / GMP_LIB_NAME / ZLIB_LIB_NAME  link tweaks
+//!   SAIL_SYSTEM_GMP=1  link real libgmp instead of bundled mini-gmp (also OK on
+//!                  Windows: sail.h's LLP64 patch keeps 64-bit values intact).
+//!                  Consumer-facing equivalent: the `system-gmp` cargo feature
+//!                  (`system-gmp-static` for static linking). Auto-discovery
+//!                  order: GMP_DIR, INCLUDE/LIB, structured PATH scan (bin/prefix
+//!                  -> include|lib), gmp files directly on PATH, toolchain default.
+//!   GMP_DIR        prefix of a custom libgmp; uses $GMP_DIR/{include,lib}
+//!   GMP_INCLUDE_DIR / GMP_LIB_DIR  override either half of GMP_DIR
+//!   GMP_LIB_NAME (default "gmp") / GMP_STATIC=1  link name / link statically
+//!   ZLIB_LIB_DIR / ZLIB_LIB_NAME  zlib link tweaks (external runtime only)
 //! The native model/runtime is force-built at >= -O2 (the exact-rational FP
 //! paths are unusably slow at -O0); SAIL_MODEL_DEBUG=1 inherits the cargo
 //! profile's own opt-level instead, for a fast unoptimized compile.
@@ -42,8 +50,91 @@ fn unpack_vendored_model(vendor: &Path) -> PathBuf {
     out
 }
 
+/// True if `dir` holds a linkable gmp (any platform's naming).
+fn gmp_lib_present(dir: &Path) -> bool {
+    for name in ["gmp.lib", "libgmp.a", "libgmp.so", "libgmp.dylib"] {
+        if dir.join(name).is_file() {
+            return true;
+        }
+    }
+    // Versioned shared objects (libgmp.so.10, ...).
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(Result::ok)
+                .any(|e| e.file_name().to_string_lossy().starts_with("libgmp.so"))
+        })
+        .unwrap_or(false)
+}
+
+/// First dir in a `;`/`:`-separated env path-list (e.g. MSVC's INCLUDE / LIB)
+/// that satisfies `pred`.
+fn find_dir_in_env(var: &str, pred: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    env::var_os(var).and_then(|v| env::split_paths(&v).find(|d| pred(d)))
+}
+
+/// Scan PATH for a system GMP and return (include_dir, lib_dir); either may be
+/// None, in which case the toolchain's default search path is relied on for
+/// that half. For each PATH entry it probes the dir itself, `<dir>/include`
+/// (`/lib`), and the sibling `<dir>/../include` (`/../lib`) — so it works
+/// whether a bin/ or the prefix is on PATH, or (common on Windows) the include/
+/// and lib/ dirs themselves are, even as separate PATH entries.
+fn scan_path_for_gmp() -> (Option<PathBuf>, Option<PathBuf>) {
+    let path = match env::var_os("PATH") {
+        Some(p) => p,
+        None => return (None, None),
+    };
+    let mut inc = None;
+    let mut lib = None;
+    for dir in env::split_paths(&path) {
+        let sibling = dir.parent().map(Path::to_path_buf);
+        if inc.is_none() {
+            let mut cands = vec![dir.join("include")];
+            cands.extend(sibling.as_ref().map(|p| p.join("include")));
+            inc = cands.into_iter().find(|c| c.join("gmp.h").is_file());
+        }
+        if lib.is_none() {
+            let mut cands = vec![dir.join("lib")];
+            cands.extend(sibling.as_ref().map(|p| p.join("lib")));
+            lib = cands.into_iter().find(|c| gmp_lib_present(c));
+        }
+        if inc.is_some() && lib.is_some() {
+            break;
+        }
+    }
+    (inc, lib)
+}
+
+/// Last-resort PATH rule: gmp.h and a gmp lib sitting DIRECTLY in PATH dirs (the
+/// two may be different entries). Catches installs that don't follow the
+/// bin/include/lib prefix convention — anything that just dumped the files into
+/// a dir that happens to be on PATH.
+fn scan_path_flat() -> (Option<PathBuf>, Option<PathBuf>) {
+    let path = match env::var_os("PATH") {
+        Some(p) => p,
+        None => return (None, None),
+    };
+    let mut inc = None;
+    let mut lib = None;
+    for dir in env::split_paths(&path) {
+        if inc.is_none() && dir.join("gmp.h").is_file() {
+            inc = Some(dir.clone());
+        }
+        if lib.is_none() && gmp_lib_present(&dir) {
+            lib = Some(dir.clone());
+        }
+        if inc.is_some() && lib.is_some() {
+            break;
+        }
+    }
+    (inc, lib)
+}
+
 fn main() {
-    for key in ["SAIL_MODEL_C", "SAIL_LIB_DIR", "SAIL_MODEL_INC", "SAIL_SYSTEM_GMP", "SAIL_MODEL_DEBUG"] {
+    for key in [
+        "SAIL_MODEL_C", "SAIL_LIB_DIR", "SAIL_MODEL_INC", "SAIL_SYSTEM_GMP", "SAIL_MODEL_DEBUG",
+        "GMP_DIR", "GMP_INCLUDE_DIR", "GMP_LIB_DIR", "GMP_LIB_NAME", "GMP_STATIC",
+        "ZLIB_LIB_DIR", "ZLIB_LIB_NAME",
+    ] {
         println!("cargo:rerun-if-env-changed={key}");
     }
 
@@ -63,13 +154,69 @@ fn main() {
 
     // Runtime selection: default = vendored patched runtime (self-contained,
     // bundled mini-gmp, no elf.c/zlib); SAIL_LIB_DIR = external runtime (system
-    // GMP + zlib); SAIL_SYSTEM_GMP = vendored sources but real libgmp.
+    // GMP + zlib); SAIL_SYSTEM_GMP or the `system-gmp` feature = vendored sources
+    // but real libgmp (`system-gmp-static`/GMP_STATIC for static linking).
+    let feature_system_gmp = env::var_os("CARGO_FEATURE_SYSTEM_GMP").is_some();
     let system_runtime = env::var_os("SAIL_LIB_DIR").is_some();
-    let system_gmp = system_runtime || env::var_os("SAIL_SYSTEM_GMP").is_some();
+    let system_gmp =
+        system_runtime || feature_system_gmp || env::var_os("SAIL_SYSTEM_GMP").is_some();
+    let gmp_static = env::var_os("CARGO_FEATURE_SYSTEM_GMP_STATIC").is_some()
+        || env::var_os("GMP_STATIC").is_some();
     let sail_lib = env::var("SAIL_LIB_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| vendor.join("sail-runtime"));
     assert!(sail_lib.is_dir(), "Sail runtime dir does not exist: {sail_lib:?}");
+
+    // Resolve the system GMP's include/lib dirs (explicit env wins, else discover
+    // per the module-doc order). Feeding the header path through cc's .include()
+    // is portable across MSVC and gcc, so consumers don't hand-set CPATH/CFLAGS.
+    let gmp_dir = env::var_os("GMP_DIR").map(PathBuf::from);
+    let explicit_include = env::var_os("GMP_INCLUDE_DIR")
+        .map(PathBuf::from)
+        .or_else(|| gmp_dir.as_ref().map(|p| p.join("include")));
+    let explicit_lib = env::var_os("GMP_LIB_DIR")
+        .map(PathBuf::from)
+        .or_else(|| gmp_dir.as_ref().map(|p| p.join("lib")));
+    let (gmp_include, gmp_lib_dir) = if explicit_include.is_some() || explicit_lib.is_some() {
+        (explicit_include, explicit_lib)
+    } else if system_gmp {
+        let (s_inc, s_lib) = scan_path_for_gmp();
+        let (f_inc, f_lib) = scan_path_flat();
+        let inc = find_dir_in_env("INCLUDE", |d| d.join("gmp.h").is_file())
+            .or(s_inc)
+            .or(f_inc);
+        let lib = find_dir_in_env("LIB", gmp_lib_present).or(s_lib).or(f_lib);
+        (inc, lib)
+    } else {
+        (None, None)
+    };
+
+    // Hard guarantee: an explicit system-gmp request never silently falls back to
+    // the bundled mini-gmp. Probe that <gmp.h> compiles and fail loudly now,
+    // rather than grinding through the whole model build into a cryptic error.
+    if system_gmp {
+        let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+        let probe_src = out.join("gmp_probe.c");
+        std::fs::write(
+            &probe_src,
+            "#include <gmp.h>\nint sail_gmp_probe(void){mpz_t z;mpz_init(z);mpz_clear(z);return 0;}\n",
+        )
+        .expect("write gmp probe source");
+        let mut probe = cc::Build::new();
+        probe.file(&probe_src).cargo_metadata(false).warnings(false);
+        if let Some(inc) = &gmp_include {
+            probe.include(inc);
+        }
+        if probe.try_compile("sail_gmp_probe").is_err() {
+            panic!(
+                "system-gmp is requested (cargo feature `system-gmp`/`system-gmp-static` or \
+                 SAIL_SYSTEM_GMP) but <gmp.h> could not be compiled. Point the build at a libgmp \
+                 via GMP_DIR=<prefix> (with include/ and lib/), GMP_INCLUDE_DIR/GMP_LIB_DIR, \
+                 INCLUDE/LIB, PATH, or a system-wide install. This build does NOT fall back to \
+                 the bundled mini-gmp."
+            );
+        }
+    }
 
     // Floor the native model/runtime at -O2 even in dev builds: at the cargo
     // dev profile's -O0 the exact-rational FP paths (hundreds of mpq ops per
@@ -77,8 +224,6 @@ fn main() {
     // single-stepped, so there is no reason to leave it unoptimized.
     // SAIL_MODEL_DEBUG=1 opts out (inherit the profile's level verbatim) for a
     // fast unoptimized compile when runtime speed doesn't matter.
-    // Otherwise pass through anything already >= -O2 (2/3) or a size level
-    // (s/z), and bump 0/1 (or an unset/empty value) up to -O2.
     let model_opt = if env::var_os("SAIL_MODEL_DEBUG").is_some() {
         env::var("OPT_LEVEL").unwrap_or_else(|_| "0".to_string())
     } else {
@@ -122,6 +267,9 @@ fn main() {
     common_flags(&mut cxx);
     if system_gmp {
         cxx.define("SAIL_SYSTEM_GMP", None); // sail.h: include <gmp.h>
+        if let Some(inc) = &gmp_include {
+            cxx.include(inc);
+        }
     }
     cxx.compile("sailarm");
 
@@ -142,6 +290,9 @@ fn main() {
     }
     if system_gmp {
         crt.define("SAIL_SYSTEM_GMP", None);
+        if let Some(inc) = &gmp_include {
+            crt.include(inc);
+        }
     } else {
         crt.file(vendor.join("sail-runtime/mini-gmp.c"))
             .file(vendor.join("sail-runtime/mini-mpq.c"));
@@ -155,15 +306,16 @@ fn main() {
     // ---- native link deps ----------------------------------------------------
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
-    if let Ok(dir) = env::var("GMP_LIB_DIR") {
-        println!("cargo:rustc-link-search=native={dir}");
+    if let Some(dir) = &gmp_lib_dir {
+        println!("cargo:rustc-link-search=native={}", dir.display());
     }
     if let Ok(dir) = env::var("ZLIB_LIB_DIR") {
         println!("cargo:rustc-link-search=native={dir}");
     }
     if system_gmp {
         let gmp = env::var("GMP_LIB_NAME").unwrap_or_else(|_| "gmp".into());
-        println!("cargo:rustc-link-lib={gmp}");
+        let kind = if gmp_static { "static=" } else { "" };
+        println!("cargo:rustc-link-lib={kind}{gmp}");
     }
     if system_runtime {
         let zlib = env::var("ZLIB_LIB_NAME")

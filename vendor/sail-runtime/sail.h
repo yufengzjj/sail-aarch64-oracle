@@ -72,9 +72,10 @@
  * such platforms. Call sites in sail.c / rts.c / sail_config.c and in the
  * generated model all include this header, so the redirect covers them; the
  * mini-gmp internals themselves are limb-size-correct and stay untouched.
- * (With SAIL_SYSTEM_GMP on an LLP64 platform the same truncation exists —
- * that combination is unsupported; use the bundled mini-gmp there.) */
-#if !defined(SAIL_SYSTEM_GMP) && ULONG_MAX < 0xFFFFFFFFFFFFFFFFULL
+ * The redirect uses only limb-level GMP APIs (mpz_getlimbn / mpz_import), so it
+ * is correct for BOTH mini-gmp and a system libgmp; apply it whenever the
+ * platform is LLP64, regardless of SAIL_SYSTEM_GMP. */
+#if ULONG_MAX < 0xFFFFFFFFFFFFFFFFULL
 
 static inline void sail_mpz_set_u64(mpz_t r, uint64_t x)
 {
@@ -129,6 +130,17 @@ static inline int sail_mpz_cmp_i64(const mpz_t a, int64_t b)
   return (mb > ma) - (mb < ma);      /* both negative: bigger |.| is smaller */
 }
 
+/* A system <gmp.h> defines these as macros (-> __gmpz_*); undef before our
+ * 64-bit-safe redirect so it wins without a redefinition warning. No-op for
+ * mini-gmp (plain function decls). */
+#undef mpz_set_ui
+#undef mpz_set_si
+#undef mpz_get_ui
+#undef mpz_get_si
+#undef mpz_cmp_ui
+#undef mpz_cmp_si
+#undef mpz_init_set_ui
+#undef mpz_init_set_si
 #define mpz_set_ui(r, x) sail_mpz_set_u64((r), (uint64_t)(x))
 #define mpz_set_si(r, x) sail_mpz_set_i64((r), (int64_t)(x))
 #define mpz_get_ui(x) sail_mpz_get_u64(x)

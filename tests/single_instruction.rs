@@ -224,6 +224,91 @@ fn sve_bf16_matmul() {
     assert_eq!(cpu.get_z(2).as_slice(), ones_bf16.as_slice());
 }
 
+// Benchmark: FCLAMP Zd.<T>, Zn.<T>, Zm.<T> (Zd = clamp(Zd, Zn..Zm)). FCLAMP is
+// destructive, so Zd is refreshed with fresh RANDOM normal-float operands every
+// iteration (otherwise it converges to a constant and re-clamps the same inputs
+// forever). The per-iteration set_z refresh is timed on its own and subtracted,
+// leaving FCLAMP-only time. Operands are normal floats with wide, varied
+// exponents (no Inf/NaN/denormal fast/slow special-cases). Run:
+//   cargo test --release --test single_instruction bench_fclamp -- --ignored --nocapture
+#[test]
+#[ignore = "benchmark"]
+fn bench_fclamp() {
+    const N: u32 = 2000;
+    const POOL: usize = 64;
+
+    fn xorshift(s: &mut u64) -> u64 {
+        let mut x = *s;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *s = x;
+        x
+    }
+    // Z_CHUNKS u64s packed with random NORMAL floats (ebits exp, mbits mantissa).
+    fn rand_vec(seed: u64, ebits: u32, mbits: u32) -> [u64; Z_CHUNKS] {
+        let mut s = seed | 1;
+        let width = 1 + ebits + mbits;
+        let lanes = 64 / width;
+        let emax = (1u64 << ebits) - 1;
+        let mut out = [0u64; Z_CHUNKS];
+        for chunk in out.iter_mut() {
+            let mut w = 0u64;
+            for l in 0..lanes {
+                let r = xorshift(&mut s);
+                let sign = (r >> 63) & 1;
+                let exp = emax / 4 + (r % (emax / 2)); // mid-range -> always normal
+                let mant = r & ((1u64 << mbits) - 1);
+                let elem = (sign << (ebits + mbits)) | (exp << mbits) | mant;
+                w |= elem << (l as u32 * width);
+            }
+            *chunk = w;
+        }
+        out
+    }
+
+    // (name, opcode, exp_bits, mant_bits, lo=-100.0, hi=+100.0 packed per lane).
+    let variants = [
+        ("fclamp.h", 0x6462_2420u32, 5u32, 10u32, 0xD640_D640_D640_D640u64, 0x5640_5640_5640_5640u64),
+        ("fclamp.s", 0x64A2_2420, 8, 23, 0xC2C8_0000_C2C8_0000, 0x42C8_0000_42C8_0000),
+        ("fclamp.d", 0x64E2_2420, 11, 52, 0xC059_0000_0000_0000, 0x4059_0000_0000_0000),
+    ];
+    for vl in [128u32, 512, 2048] {
+        for (name, op, eb, mb, lo, hi) in variants {
+            let mut cpu = Oracle::new();
+            let eff = cpu.set_vl(vl);
+            cpu.set_z(1, &[lo; Z_CHUNKS]);
+            cpu.set_z(2, &[hi; Z_CHUNKS]);
+            let pool: Vec<[u64; Z_CHUNKS]> = (0..POOL)
+                .map(|k| rand_vec(0x9E37_79B9_7F4A_7C15u64.wrapping_mul(k as u64 + 1) ^ op as u64, eb, mb))
+                .collect();
+
+            cpu.set_z(0, &pool[0]);
+            cpu.set_pc(0x4000);
+            cpu.step(op);
+            assert_ne!(cpu.get_pc() & 0x7FF, 0x200, "{name} ({op:#010x}) trapped");
+
+            // refresh-only baseline, then refresh + FCLAMP; net = FCLAMP alone.
+            let t0 = std::time::Instant::now();
+            for i in 0..N as usize {
+                cpu.set_z(0, &pool[i % POOL]);
+            }
+            let refresh = t0.elapsed();
+            let t1 = std::time::Instant::now();
+            for i in 0..N as usize {
+                cpu.set_z(0, &pool[i % POOL]);
+                cpu.step(op);
+            }
+            let net = t1.elapsed().saturating_sub(refresh);
+            println!(
+                "{name} @ VL={eff:>4}: {:>8.2} µs/instr (net of {:.2}µs/it refresh)",
+                net.as_nanos() as f64 / 1000.0 / N as f64,
+                refresh.as_nanos() as f64 / 1000.0 / N as f64
+            );
+        }
+    }
+}
+
 /// Runtime VL change: programming ZCR_EL3.LEN (via set_vl) is observable and
 /// makes the SVE element count shrink, without disturbing GPRs or PC.
 #[test]
