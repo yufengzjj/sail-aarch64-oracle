@@ -104,6 +104,11 @@ State access API (everything a diff harness can set/observe):
   handles one unit per iteration (1 byte; 16 for SETG\*), and a
   non-overlapping CPY\* copies backward. Another implementation may choose
   differently, so diff the memory result, not the registers and NZCV.
+- **No MTE allocation-tag storage**: the model's `PhysMemTagWrite` /
+  `PhysMemTagRead` are placeholders, so tag writes (STG, SETG\*, …) are
+  dropped and every tag read (LDG, tag checks) returns 0 — even with the
+  MMU on, Tagged Normal memory (MAIR 0xF0), TBI and SCTLR_EL3.ATA set.
+  SETG\* still writes its data bytes; diff those, not the tags.
 - **Threading**: cross-thread use is safe but serialized by one global lock;
   parallel throughput comes from processes (`cargo nextest`), not threads.
 - **Instance creation cost**: ~0.4 s (full model reset); individual steps are
