@@ -3,7 +3,7 @@
 
 Usage: fix_cpp_model.py path/to/model.h path/to/model.cpp
 
-Four fixes, each for a thing the C++ backend gets wrong:
+Four fixes for things the C++ backend gets wrong, plus one for the model:
 
 1. Some method declarations are emitted TWICE in the class body — valid C, but
    a C++ error. -> drop exact duplicate declaration lines.
@@ -22,6 +22,13 @@ Four fixes, each for a thing the C++ backend gets wrong:
    pulls the scratch out from under the others. -> guard the startup block to
    the first live instance and finish to the last (refcounted), leaving the
    per-instance parts untouched.
+
+5. MOPS block size: sail-arm's stubs.sail leaves the IMP DEF SETSizeChoice /
+   CPYSizeChoice as __UNKNOWN_integer(), which becomes a constant 0. The
+   SETM/SETGM/CPYM/CPYFM loops only advance by that size, so any main stage
+   with bytes left dies (Mem.Set alignment check divides by 0; CPY asserts
+   B*8-1 >= 0). -> return one unit per iteration: AlignSize for SET (1, or
+   16 for SETG), 1 for CPY.
 """
 import os
 import re
@@ -150,7 +157,7 @@ def refcount_scratch(cpp_path: str) -> None:
                 runs_wrapped += 1
 
         for line in src:
-            if "fix_cpp_model.py" in line:
+            if line == GUARD_DECL:
                 already = True
             if in_fn is None:
                 if line.startswith("void Model::model_init(void)"):
@@ -187,8 +194,45 @@ def refcount_scratch(cpp_path: str) -> None:
     print(f"{cpp_path}: wrapped {runs_wrapped} startup/finish run(s) in refcount guards")
 
 
+SIZE_CHOICE = {  # function -> replacement for its `return 0` statement
+    "zSETSizzeChoice": "COPY(sail_int)(&{tmp}, zAlignSizze);",
+    "zCPYSizzeChoice": "CONVERT_OF(sail_int, mach_int)(&{tmp}, INT64_C(1));",
+}
+RETURN_ZERO = re.compile(r"^(\s+)CONVERT_OF\(sail_int, mach_int\)\(&(zghz\d+), INT64_C\(0\)\);\s*$")
+SIZE_MARK = "/* fix_cpp_model.py: MOPS block size */"
+
+
+def mops_size_choice(cpp_path: str) -> None:
+    """Make SETSizeChoice/CPYSizeChoice return one unit instead of 0."""
+    with open(cpp_path, newline="") as f:
+        lines = f.readlines()
+    fixed = 0
+    for name, repl in SIZE_CHOICE.items():
+        sig = f"void Model::{name}("
+        start = next((i for i, l in enumerate(lines) if l.startswith(sig)), None)
+        if start is None:
+            sys.exit(f"{cpp_path}: {name} not found")
+        end = next(i for i in range(start, len(lines)) if lines[i].startswith("}"))
+        body = range(start, end)
+        if any(SIZE_MARK in lines[i] for i in body):
+            continue
+        hits = [i for i in body if RETURN_ZERO.match(lines[i])]
+        if len(hits) != 1:
+            sys.exit(f"{cpp_path}: {name}: expected one INT64_C(0) result, found {len(hits)}")
+        i = hits[0]
+        m = RETURN_ZERO.match(lines[i])
+        eol = "\r\n" if lines[i].endswith("\r\n") else "\n"
+        lines[i] = f"{m.group(1)}{repl.format(tmp=m.group(2))} {SIZE_MARK}{eol}"
+        fixed += 1
+    if fixed:
+        with open(cpp_path, "w", newline="") as f:
+            f.writelines(lines)
+    print(f"{cpp_path}: fixed {fixed} MOPS size-choice stub(s), {len(SIZE_CHOICE) - fixed} already done")
+
+
 if __name__ == "__main__":
     header, cpp = sys.argv[1], sys.argv[2]
     kept = dedup_header(header)
     gen_missing(kept, header, cpp)
     refcount_scratch(cpp)
+    mops_size_choice(cpp)

@@ -6,7 +6,8 @@
   `arm-v9.4-a` (master, 2026-06) plus this crate's `sail/harness.sail`,
   using the command in README Step 2 **followed by
   `scripts/fix_cpp_model.py`** (the cpp backend needs four mechanical fixes
-  on this model — see the script's docstring). The model is a C++ class
+  on this model, plus one for the model's zero-size MOPS stubs — see the
+  script's docstring). The model is a C++ class
   (`model::Model`): all architectural state is per-instance, enabling
   multiple independent oracles per process. License: BSD-3-Clause-Clear
   (Arm Limited et al.; see the sail-arm repository LICENSE).

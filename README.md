@@ -99,6 +99,11 @@ State access API (everything a diff harness can set/observe):
   feature (determinism), not a bug.
 - **Nondeterministic instructions**: `RNDR`/`RNDRRS` use the runtime RNG —
   exclude them from diff campaigns or pin the seed.
+- **MOPS IMP DEF choices are fixed**: SET\*/SETG\*/CPY\*/CPYF\* all use
+  Option A, the prologue and epilogue process no bytes, the main stage
+  handles one unit per iteration (1 byte; 16 for SETG\*), and a
+  non-overlapping CPY\* copies backward. Another implementation may choose
+  differently, so diff the memory result, not the registers and NZCV.
 - **Threading**: cross-thread use is safe but serialized by one global lock;
   parallel throughput comes from processes (`cargo nextest`), not threads.
 - **Instance creation cost**: ~0.4 s (full model reset); individual steps are
@@ -112,7 +117,8 @@ State access API (everything a diff harness can set/observe):
 > Windows 11 MSVC — 13 tests, including multi-instance independence, memory
 > isolation, direct-RAM/instruction agreement and cross-thread stress. Non-obvious toolchain findings (Sail
 > DCE needs `--c-preserve`, `z`→`zz` name mangling, four cpp-backend bugs
-> auto-fixed by `scripts/fix_cpp_model.py`, an LLP64 64-bit-truncation bug
+> and the model's zero-size MOPS stubs auto-fixed by
+> `scripts/fix_cpp_model.py`, an LLP64 64-bit-truncation bug
 > in the Sail runtime on Windows) are documented in the build steps below
 > and in `vendor/README.md`.
 
@@ -226,7 +232,8 @@ sail --cpp --c-no-main -O --Oconstant-fold --memo-z3 \
     -o cpp/model
 
 # MANDATORY: fix the cpp backend's output (dedup declarations, generate
-# model_missing.cpp, refcount the global scratch lifecycle):
+# model_missing.cpp, refcount the global scratch lifecycle, give the MOPS
+# size choices a nonzero size):
 python3 /path/to/sail-aarch64-oracle/scripts/fix_cpp_model.py \
     cpp/model.h cpp/model.cpp
 
