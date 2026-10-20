@@ -348,6 +348,217 @@ fn aese_single_round() {
     }
 }
 
+/// DC ZVA, X1  (sys #3, c7, c4, #1) — zero a DCZID_EL0.BS-sized aligned block.
+const DC_ZVA_X1: u32 = 0xD50B_7421;
+/// MRS X2, DCZID_EL0
+const MRS_X2_DCZID: u32 = 0xD53B_00E2;
+
+/// DC ZVA is implemented (DCZID_EL0.BS = 8 -> 1 KiB block). But in the oracle's
+/// reset state the MMU is OFF (SCTLR.M=0), so every data access is Device-nGnRnE,
+/// and the Arm ARM requires DC ZVA to a Device location to take an Alignment
+/// fault. So with no MMU set up it FAULTS (Data Abort, DFSC=alignment) and zeroes
+/// nothing — correct behavior, not a missing-instruction. (To actually zero, map
+/// the target as Normal memory via the MMU first.)
+#[test]
+fn dc_zva_faults_on_device_memory() {
+    const ADDR: u64 = 0x8000_0000;
+    let mut cpu = Oracle::new();
+
+    // DCZID_EL0 is readable: BS[3:0] = log2 block size in words; DZP[4]=0 (allowed).
+    cpu.step(MRS_X2_DCZID);
+    let dczid = cpu.get_x(2);
+    assert_eq!(dczid & 0xf, 8, "DCZID_EL0.BS = 8 (1 KiB block)");
+    assert_eq!((dczid >> 4) & 1, 0, "DZP=0: DC ZVA not prohibited at this EL");
+
+    let fill = vec![0xAAu8; 0x800];
+    cpu.write_mem(ADDR, &fill);
+    cpu.set_x(1, ADDR + 0x40);
+    cpu.set_pc(0x4000);
+    cpu.step(DC_ZVA_X1);
+
+    // Synchronous exception to EL3 (sync vector, current EL with SP_ELx).
+    assert_eq!(cpu.get_pc() & 0x7ff, 0x200, "DC ZVA took a synchronous exception");
+    let esr = cpu.esr_el3();
+    assert_eq!((esr >> 26) & 0x3f, 0x25, "EC = Data Abort (current EL)");
+    assert_eq!(esr & 0x3f, 0x21, "DFSC = Alignment fault (DC ZVA on Device memory)");
+    assert_eq!(cpu.elr_el3(), 0x4000, "ELR_EL3 = faulting DC ZVA");
+
+    // Nothing was zeroed: the pattern is intact.
+    let mut buf = vec![0u8; 0x800];
+    cpu.read_mem(ADDR, &mut buf);
+    assert!(buf.iter().all(|&b| b == 0xAA), "memory untouched by the faulted DC ZVA");
+}
+
+/// With the MMU turned on and the target mapped as Normal memory, DC ZVA no
+/// longer faults — it zeroes the DCZID block. There is NO direct API to set
+/// SCTLR/TCR/MAIR/TTBR, so we configure the EL3 translation regime by stepping
+/// the MSR sequence and seed the page table via write_mem.
+#[test]
+fn dc_zva_works_with_mmu_on() {
+    const BUF: u64 = 0x8000_0000;
+    const TT: u64 = 0x9000_0000; // L1 table base (lives inside the block we map)
+    let mut cpu = Oracle::new();
+
+    cpu.write_mem(BUF, &vec![0xAAu8; 0x800]); // nonzero pattern
+
+    // Minimal identity map: 4KB granule, T0SZ=25 -> walk starts at L1, each L1
+    // entry maps a 1 GiB block. VA 0x8000_0000 -> L1 index [38:30] = 2.
+    // descriptor = base(0x8000_0000) | AF(1<<10) | SH=inner(3<<8) | AttrIndx=0 |
+    //              block(0b01) = 0x8000_0701  (Normal memory via MAIR Attr0).
+    cpu.write_mem_u64(TT + 2 * 8, 0x8000_0701);
+
+    let setup: [u32; 11] = [
+        0xD2801FE0, // mov  x0, #0xff
+        0xD51EA200, // msr  MAIR_EL3, x0        ; Attr0 = Normal WB
+        0xD286A320, // mov  x0, #0x3519
+        0xF2A00040, // movk x0, #2, lsl #16     ; TCR_EL3 = 0x23519 (T0SZ=25,4KB,WB,IS,PS=40b)
+        0xD51E2040, // msr  TCR_EL3, x0
+        0xD2B20000, // mov  x0, #0x9000_0000
+        0xD51E2000, // msr  TTBR0_EL3, x0
+        0xD53E1000, // mrs  x0, SCTLR_EL3
+        0xB2400000, // orr  x0, x0, #1          ; M = 1
+        0xD51E1000, // msr  SCTLR_EL3, x0
+        0xD5033FDF, // isb
+    ];
+    cpu.set_pc(0x4000);
+    for op in setup {
+        cpu.step(op);
+    }
+
+    cpu.set_x(1, BUF + 0x40);
+    cpu.step(0xD50B_7421); // dc zva, x1
+
+    assert_ne!(
+        cpu.get_pc() & 0x7ff, 0x200,
+        "DC ZVA still faulted (ESR_EL3={:#x}, DFSC={:#x})", cpu.esr_el3(), cpu.esr_el3() & 0x3f
+    );
+
+    let mut buf = vec![0u8; 0x800];
+    cpu.read_mem(BUF, &mut buf);
+    assert!(buf[..0x400].iter().all(|&b| b == 0), "1 KiB block must be zeroed");
+    assert!(buf[0x400..].iter().all(|&b| b == 0xAA), "past the block must be untouched");
+    println!("OK: MMU on -> DC ZVA zeroed [{BUF:#x}, {:#x}); no fault", BUF + 0x400);
+}
+
+/// LDTR x30,[x1,#5] (unprivileged load) vs LDUR x30,[x1,#5] — probe whether the
+/// loaded 64-bit value loses its top 2 bits.
+#[test]
+fn ldtr_value_probe() {
+    const A: u64 = 0x8000_0008; // x1+5; 8-aligned so a Device-memory load won't fault
+    let mut cpu = Oracle::new();
+    for v in [
+        0xFFFF_FFFF_FFFF_FFFFu64,
+        0xC000_0000_0000_0003,
+        0x8000_0000_0000_0001,
+        0x4000_0000_0000_0000,
+        0x0123_4567_89AB_CDEF,
+    ] {
+        for (name, op) in [("LDTR", 0xF840_583Eu32), ("LDUR", 0xF840_503E)] {
+            cpu.write_mem_u64(A, v);
+            cpu.set_x(1, A - 5);
+            cpu.set_x(30, 0);
+            cpu.set_pc(0x4000);
+            cpu.step(op);
+            let got = cpu.get_x(30);
+            let trap = cpu.get_pc() & 0x7ff == 0x200;
+            println!("{name} v={v:#018x} -> x30={got:#018x}  top2={:02b}  trap={trap}", got >> 62);
+        }
+    }
+}
+
+/// UNALIGNED LDTR with the MMU on (Normal memory): x1 aligned, addr = x1+5 ≡ 5
+/// mod 8, so the 8-byte load is unaligned and goes through the byte-assembly path.
+#[test]
+fn ldtr_unaligned_with_mmu() {
+    const BUF: u64 = 0x8000_0000;
+    const TT: u64 = 0x9000_0000;
+    let mut cpu = Oracle::new();
+
+    // 0xFF across the window so an unaligned 8-byte load should read all-ones.
+    cpu.write_mem(BUF, &vec![0xFFu8; 0x40]);
+    cpu.write_mem_u64(TT + 2 * 8, 0x8000_0701); // Normal-memory L1 block
+
+    let setup: [u32; 11] = [
+        0xD2801FE0, 0xD51EA200, 0xD286A320, 0xF2A00040, 0xD51E2040, 0xD2B20000,
+        0xD51E2000, 0xD53E1000, 0xB2400000, 0xD51E1000, 0xD5033FDF,
+    ];
+    cpu.set_pc(0x4000);
+    for op in setup {
+        cpu.step(op);
+    }
+
+    cpu.set_x(1, BUF); // x1 aligned -> addr = BUF+5 is unaligned
+    cpu.set_x(30, 0);
+    cpu.step(0xF840_583E); // ldtr x30, [x1, #5]
+    let got = cpu.get_x(30);
+    let trap = cpu.get_pc() & 0x7ff == 0x200;
+    println!("UNALIGNED LDTR @ {:#x} -> x30={got:#018x}  top2={:02b}  trap={trap}", BUF + 5, got >> 62);
+}
+
+/// Reproduce the failing unaligned 32-bit LDTR at a low address. Each byte is
+/// set to its own low address byte, so the loaded word decodes to exact source
+/// addresses. x1=0x1f218, addr=x1+5=0x1f21d (unaligned). MMU on, [0,1GiB) Normal.
+#[test]
+fn ldtr_w2_unaligned_low_addr() {
+    const TT: u64 = 0x9000_0000;
+    let mut cpu = Oracle::new();
+
+    // Fill 0x1f200..0x1f240 with byte[A] = A & 0xff.
+    let region: Vec<u8> = (0..0x40u64).map(|i| ((0x1f200 + i) & 0xff) as u8).collect();
+    cpu.write_mem(0x1f200, &region);
+    // API sanity: unaligned u64/u32 read at 0x1f21d must reflect what we wrote.
+    println!("API read_mem_u64(0x1f21d) = {:#018x} (expect ..201f1e1d)", cpu.read_mem_u64(0x1f21d));
+
+    // Identity-map [0,1GiB) as Normal so the unaligned load doesn't fault.
+    cpu.write_mem_u64(TT + 0 * 8, 0x0000_0701); // L1 idx 0 covers 0x1f218
+    let setup: [u32; 11] = [
+        0xD2801FE0, 0xD51EA200, 0xD286A320, 0xF2A00040, 0xD51E2040, 0xD2B20000,
+        0xD51E2000, 0xD53E1000, 0xB2400000, 0xD51E1000, 0xD5033FDF,
+    ];
+    cpu.set_pc(0x4000);
+    for op in setup {
+        cpu.step(op);
+    }
+
+    cpu.set_x(1, 0x1f218);
+    cpu.set_x(2, 0);
+    cpu.step(0xB840_5822); // ldtr w2, [x1, #5]
+    let w2 = cpu.get_x(2) as u32;
+    let trap = cpu.get_pc() & 0x7ff == 0x200;
+    println!(
+        "LDTR w2,[x1,#5] addr=0x1f21d -> w2={w2:#010x} bytes={:02x?} (expect 0x201f1e1d) trap={trap}",
+        w2.to_le_bytes()
+    );
+}
+
+/// Reproduce the user's exact case: default config (MMU off), x1=0x1f218, no data
+/// written. addr = x1+5 = 0x1f21d is UNALIGNED for a 4-byte load; MMU-off memory
+/// is Device-nGnRnE, and unaligned Device access faults -> the load never runs and
+/// w2 keeps its INPUT value (here the sentinel 0x2657d469).
+#[test]
+fn ldtr_unaligned_device_faults() {
+    let mut cpu = Oracle::new();
+    cpu.set_x(1, 0x1f218);
+    cpu.set_x(2, 0x2657_d469); // sentinel = "input" value of w2
+    cpu.set_pc(0x4000);
+    cpu.step(0xB840_5822); // ldtr w2, [x1, #5]
+    let esr = cpu.esr_el3();
+    println!(
+        "PC={:#x} trap={} EC={:#x} DFSC={:#x} x2={:#x}",
+        cpu.get_pc(), cpu.get_pc() & 0x7ff == 0x200, (esr >> 26) & 0x3f, esr & 0x3f, cpu.get_x(2)
+    );
+    // Aligned control: x1+5 made 4-aligned (x1=0x1f213 -> addr 0x1f218) loads fine.
+    cpu.set_x(1, 0x1f213);
+    cpu.set_x(2, 0x2657_d469);
+    cpu.write_mem_u64(0x1f218, 0x0000_0000_AABB_CCDD);
+    cpu.set_pc(0x4000);
+    cpu.step(0xB840_5822);
+    println!(
+        "aligned: PC={:#x} trap={} x2={:#x} (expect 0xaabbccdd)",
+        cpu.get_pc(), cpu.get_pc() & 0x7ff == 0x200, cpu.get_x(2)
+    );
+}
+
 /// Runtime VL change: programming ZCR_EL3.LEN (via set_vl) is observable and
 /// makes the SVE element count shrink, without disturbing GPRs or PC.
 #[test]
@@ -434,6 +645,70 @@ fn fp_scalar_ops() {
     cpu.step(FDIV_D3_D4_D5);
     assert_eq!(cpu.get_z(3)[0], f64::INFINITY.to_bits(), "1.0/0.0 = +Inf");
     assert_eq!(cpu.get_fpsr(), FPSR_DZC, "FPSR: exactly DZC accumulated");
+}
+
+/// FRECPE S0, S1  (scalar single-precision reciprocal estimate).
+/// Verified encoding: `llvm-mc -triple=aarch64` -> [0x20,0xd8,0xa1,0x5e].
+const FRECPE_S0_S1: u32 = 0x5EA1_D820;
+/// FPCR.AH (Alternate Handling) — bit[1]. Requires FEAT_AFP (implemented).
+const FPCR_AH: u64 = 1 << 1;
+
+/// Runs FRECPE S0,S1 on `x` and returns (S0_result_f32, FPSR_after).
+fn frecpe_f32(cpu: &mut Oracle, x: f32) -> (f32, u64) {
+    cpu.set_z(1, &[x.to_bits() as u64]); // S1 = low 32 bits of Z1
+    cpu.set_fpsr(0);
+    cpu.step(FRECPE_S0_S1);
+    (f32::from_bits(cpu.get_z(0)[0] as u32), cpu.get_fpsr())
+}
+
+/// FEAT_RPRES gives FRECPE/FRSQRTE a 12-bit (vs the legacy 8-bit) mantissa
+/// estimate, but ONLY for single precision AND only when FPCR.AH = 1 (the
+/// "alternate FP handling" path, FEAT_AFP). Under AH=1 the estimate also takes
+/// the exception-free path (fpexc = false), so FPSR is left untouched.
+///
+/// This test pins both facts by running the same FRECPE with AH=0 and AH=1:
+/// the AH=1 (RPRES) result is a strictly tighter approximation of 1/x, and it
+/// accumulates nothing into FPSR.
+#[test]
+fn frecpe_rpres_increased_precision_under_ah() {
+    let mut cpu = Oracle::new();
+    let x = 3.0f32;
+    let truth = (1.0f64) / (x as f64); // reference reciprocal in f64
+
+    // AH=0: legacy 8-bit estimate.
+    cpu.set_fpcr(0);
+    let (est8, _) = frecpe_f32(&mut cpu, x);
+
+    // AH=1: RPRES 12-bit estimate (and exception-free).
+    cpu.set_fpcr(FPCR_AH);
+    let (est12, fpsr_after) = frecpe_f32(&mut cpu, x);
+
+    let rel = |e: f32| ((e as f64) - truth).abs() / truth;
+    let (err8, err12) = (rel(est8), rel(est12));
+
+    // 1) The two precisions genuinely differ for this input.
+    assert_ne!(
+        est8.to_bits(),
+        est12.to_bits(),
+        "AH=1 must select a different (12-bit) estimate than AH=0"
+    );
+    // 2) The RPRES estimate is strictly closer to the true reciprocal.
+    assert!(
+        err12 < err8,
+        "RPRES estimate must be tighter: err12={err12:e} !< err8={err8:e}"
+    );
+    // 3) ...and lands well inside the 12-bit relative-error class (~2^-12),
+    //    which the 8-bit estimate (~2^-8) cannot reach.
+    assert!(
+        err12 < 2.0f64.powi(-11),
+        "RPRES estimate should be ~12-bit accurate: err12={err12:e}"
+    );
+    assert!(
+        err8 > 2.0f64.powi(-11),
+        "legacy estimate should be ~8-bit accurate: err8={err8:e}"
+    );
+    // 4) AH=1 path is exception-free: FPSR untouched (fpexc = false).
+    assert_eq!(fpsr_after, 0, "FRECPE under AH=1 must not update FPSR");
 }
 
 #[test]
