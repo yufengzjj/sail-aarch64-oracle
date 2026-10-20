@@ -141,7 +141,7 @@ Optional env switches:
 
 - `SAIL_SYSTEM_GMP=1` — keep the vendored runtime but link real libgmp
   (faster arbitrary-precision paths; needs gmp headers+lib).
-- `SAIL_MODEL_C` / `SAIL_LIB_DIR` — build against a freshly generated model
+- `AARCH64_ORACLE_SAIL_MODEL_C` / `SAIL_LIB_DIR` — build against a freshly generated model
   and/or an external (opam) runtime; that path needs system GMP + zlib like
   upstream Sail (on Alpine/musl see the static-linking note in Step 3).
 
@@ -231,7 +231,7 @@ python3 /path/to/sail-aarch64-oracle/scripts/fix_cpp_model.py \
     cpp/model.h cpp/model.cpp
 
 # -> produces cpp/model.cpp (~166 MB) + cpp/model.h + cpp/model_missing.cpp
-export SAIL_MODEL_C="$PWD/cpp/model.cpp"
+export AARCH64_ORACLE_SAIL_MODEL_C="$PWD/cpp/model.cpp"
 ```
 
 Sanity check that DCE kept the wrappers (note `nzcv` mangles to `nzzcv`):
@@ -255,7 +255,7 @@ Gotchas observed in practice:
 
 ```sh
 cd /path/to/sail-aarch64-oracle
-export SAIL_MODEL_C=/path/to/sail-arm/arm-v9.4-a/cpp/model.cpp
+export AARCH64_ORACLE_SAIL_MODEL_C=/path/to/sail-arm/arm-v9.4-a/cpp/model.cpp
 # Do NOT set SAIL_LIB_DIR: the cpp-backend model needs the sint/sub_vec_int
 # aliases that only exist in the patched vendored runtime. (SAIL_LIB_DIR
 # remains available for plain `sail -c` models against an opam runtime.)

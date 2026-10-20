@@ -3,8 +3,10 @@
 //! Default is fully self-contained — vendored pre-generated model + patched
 //! runtime with bundled mini-gmp, no Sail/GMP/zlib. Env overrides for building
 //! against a freshly generated model (see README Step 2):
-//!   SAIL_MODEL_C   path to the generated model .cpp
-//!   SAIL_MODEL_INC extra include dir (default: dir of SAIL_MODEL_C)
+//!   AARCH64_ORACLE_SAIL_MODEL_C    path to the generated model .cpp
+//!   AARCH64_ORACLE_SAIL_MODEL_INC  extra include dir (default: dir of the .cpp)
+//!                  Prefixed so another Sail-based crate's model override can't
+//!                  leak into this one.
 //!   SAIL_LIB_DIR   external (opam) Sail runtime dir; implies system GMP + zlib
 //!   SAIL_SYSTEM_GMP=1  link real libgmp instead of bundled mini-gmp (also OK on
 //!                  Windows: sail.h's LLP64 patch keeps 64-bit values intact).
@@ -27,25 +29,28 @@ fn unpack_vendored_model(vendor: &Path) -> PathBuf {
     let gz = vendor.join("model.cpp.gz");
     assert!(
         gz.is_file(),
-        "vendor/model.cpp.gz is missing and SAIL_MODEL_C is not set. \
+        "vendor/model.cpp.gz is missing and AARCH64_ORACLE_SAIL_MODEL_C is not set. \
          Either restore the vendored model or generate one (README Step 2)."
     );
-    let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("model.cpp");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let out = out_dir.join("model.cpp");
+    let stamp = out_dir.join("model.cpp.gz.trailer");
 
-    let stale = match (out.metadata(), gz.metadata()) {
-        (Ok(o), Ok(g)) => match (o.modified(), g.modified()) {
-            (Ok(o), Ok(g)) => o < g,
-            _ => true,
-        },
-        _ => true,
-    };
-    if stale {
-        let mut reader =
-            flate2::read::GzDecoder::new(std::fs::File::open(&gz).expect("open model.cpp.gz"));
+    // OUT_DIR can be shared by different versions of this crate (e.g. after
+    // rolling Cargo.lock back), so mtimes can't tell which model is unpacked.
+    // The gzip trailer (CRC32 + size of the unpacked data) identifies it.
+    let data = std::fs::read(&gz).expect("read model.cpp.gz");
+    let trailer = &data[data.len().saturating_sub(8)..];
+    let fresh = out.is_file() && std::fs::read(&stamp).is_ok_and(|s| s == trailer);
+    if !fresh {
+        let _ = std::fs::remove_file(&stamp);
+        let mut reader = flate2::read::GzDecoder::new(&data[..]);
         let mut writer = std::io::BufWriter::new(
             std::fs::File::create(&out).expect("create OUT_DIR/model.cpp"),
         );
         std::io::copy(&mut reader, &mut writer).expect("decompress model.cpp.gz");
+        std::io::Write::flush(&mut writer).expect("write OUT_DIR/model.cpp");
+        std::fs::write(&stamp, trailer).expect("write OUT_DIR/model.cpp.gz.trailer");
     }
     out
 }
@@ -198,7 +203,8 @@ fn scan_path_flat(static_only: bool) -> (Option<PathBuf>, Option<PathBuf>) {
 
 fn main() {
     for key in [
-        "SAIL_MODEL_C", "SAIL_LIB_DIR", "SAIL_MODEL_INC", "SAIL_SYSTEM_GMP", "SAIL_MODEL_DEBUG",
+        "AARCH64_ORACLE_SAIL_MODEL_C", "AARCH64_ORACLE_SAIL_MODEL_INC",
+        "SAIL_LIB_DIR", "SAIL_SYSTEM_GMP", "SAIL_MODEL_DEBUG",
         "GMP_DIR", "GMP_INCLUDE_DIR", "GMP_LIB_DIR", "GMP_LIB_NAME", "GMP_STATIC",
         "ZLIB_LIB_DIR", "ZLIB_LIB_NAME",
     ] {
@@ -207,11 +213,11 @@ fn main() {
 
     let vendor = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("vendor");
 
-    let (model_src, model_inc) = match env::var("SAIL_MODEL_C") {
+    let (model_src, model_inc) = match env::var("AARCH64_ORACLE_SAIL_MODEL_C") {
         Ok(p) => {
             let src = PathBuf::from(p);
-            assert!(src.is_file(), "SAIL_MODEL_C does not exist: {src:?}");
-            let inc = env::var("SAIL_MODEL_INC")
+            assert!(src.is_file(), "AARCH64_ORACLE_SAIL_MODEL_C does not exist: {src:?}");
+            let inc = env::var("AARCH64_ORACLE_SAIL_MODEL_INC")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| src.parent().unwrap().to_path_buf());
             (src, inc)

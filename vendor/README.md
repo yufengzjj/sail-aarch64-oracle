@@ -38,7 +38,7 @@
   `SAIL_SYSTEM_GMP` + system libgmp (same license situation) — GMP simply is
   LGPL either way.
 
-`build.rs` uses all of this automatically when `SAIL_MODEL_C`/`SAIL_LIB_DIR`
+`build.rs` uses all of this automatically when `AARCH64_ORACLE_SAIL_MODEL_C`/`SAIL_LIB_DIR`
 are not set; `model.cpp.gz` (166 MB → 18 MB) is decompressed into `OUT_DIR` at
 build time. The default build is **fully self-contained**: no GMP, no zlib,
 no opam/Sail/z3 — just C and C++ compilers (C++20: g++ 10+/clang 10+/VS2019
