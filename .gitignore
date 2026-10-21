@@ -1,4 +1,5 @@
 /target
+/tests/coexist/target
 Cargo.lock
 # uncompressed generated Sail C (the crate ships vendor/model.c.gz instead)
 model.c

@@ -1,0 +1,17 @@
+[package]
+name = "sail-oracle-coexist"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Links sail-aarch64-oracle, sail-riscv-oracle and hybrid-x86-oracle into one test binary"
+
+# Its own workspace, so the parent crate's `cargo test` does not build it.
+[workspace]
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+sail-aarch64-oracle = { path = "../.." }
+sail-riscv-oracle = { path = "../../../sail-riscv-oracle" }
+hybrid-x86-oracle = { path = "../../../hybrid-x86-oracle" }

@@ -6,7 +6,7 @@
 #include "elf.h"
 extern void (*sail_rts_set_coverage_file)(const char *);
 
-namespace model {
+namespace sail_aarch64 {
 // enum signal
 enum zsignal { zLOW, zHIGH };
 

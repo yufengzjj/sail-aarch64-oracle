@@ -1,6 +1,6 @@
 [package]
 name = "sail-aarch64-oracle"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Rust FFI oracle around the Sail arm-v9.4-a model (sail -> C++ -> Rust) for differential testing"
 # Own code is BSD-3-Clause; the compound expression reflects the vendored,

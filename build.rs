@@ -1,5 +1,10 @@
 //! Build script: compile the Sail C++ model class + the C Sail runtime + shim.
 //!
+//! Every C/C++ file force-includes csrc/sailarm_prefix.h, which renames the
+//! global names of the runtime, mini-gmp and model to `sailarm_*`, so other
+//! Sail-based crates (with their own copies) can link into the same binary.
+//! Regenerate it with scripts/gen_prefix_header.sh.
+//!
 //! Default is fully self-contained — vendored pre-generated model + patched
 //! runtime with bundled mini-gmp, no Sail/GMP/zlib. Env overrides for building
 //! against a freshly generated model (see README Step 2):
@@ -308,8 +313,16 @@ fn main() {
         }
     };
 
+    let prefix_header = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+        .join("csrc")
+        .join("sailarm_prefix.h");
     let common_flags = |b: &mut cc::Build| {
         b.opt_level_str(&model_opt);
+        if b.get_compiler().is_like_msvc() {
+            b.flag(format!("/FI{}", prefix_header.display()));
+        } else {
+            b.flag("-include").flag(&prefix_header);
+        }
         // Sail-generated code is not warning-clean; keep logs readable.
         b.flag_if_supported("-Wno-unused")
             .flag_if_supported("-Wno-unused-parameter")
@@ -320,7 +333,7 @@ fn main() {
 
     // ---- 1) C++: generated model class + shim ------------------------------
     // Must be compiled FIRST: the model archive references runtime symbols, so
-    // it must precede libsailruntime on traditional linkers.
+    // it must precede libsailarm_runtime on traditional linkers.
     // C++20 required: generated code uses designated initializers + the `not`
     // token; MSVC needs /std:c++20 (implies /permissive-) for those.
     let mut cxx = cc::Build::new();
@@ -346,7 +359,7 @@ fn main() {
             cxx.include(inc);
         }
     }
-    cxx.compile("sailarm");
+    cxx.compile("sailarm_model");
 
     // ---- 2) C: Sail runtime -------------------------------------------------
     let mut crt = cc::Build::new();
@@ -376,7 +389,7 @@ fn main() {
         // Only external runtimes compile elf.c; the model references nothing in it.
         crt.file(sail_lib.join("elf.c"));
     }
-    crt.compile("sailruntime");
+    crt.compile("sailarm_runtime");
 
     // ---- native link deps ----------------------------------------------------
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
@@ -420,8 +433,11 @@ fn main() {
     for p in [
         model_src.as_path(),
         Path::new("vendor/model.cpp.gz"),
+        Path::new("vendor/model.h"),
+        Path::new("vendor/model_missing.cpp"),
         Path::new("vendor/sail-runtime"),
         Path::new("csrc/shim.cpp"),
+        Path::new("csrc/sailarm_prefix.h"),
         Path::new("build.rs"),
     ] {
         println!("cargo:rerun-if-changed={}", p.display());

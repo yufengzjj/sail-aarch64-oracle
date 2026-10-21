@@ -5,7 +5,7 @@
 #include "rts.h"
 #include "model.h"
 
-namespace model {
+namespace sail_aarch64 {
 
 bool Model::zeq_anyzIE__InstrEncz5zK(enum z__InstrEnc op1, enum z__InstrEnc op2)
 {
@@ -252,4 +252,4 @@ unit Model::zputchar(sail_int op)
   return sail_putchar(op);
 }
 
-} // namespace model
+} // namespace sail_aarch64

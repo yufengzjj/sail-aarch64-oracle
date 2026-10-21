@@ -9,45 +9,45 @@ use std::ffi::c_void;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 extern "C" {
-    fn oracle_new() -> *mut c_void;
-    fn oracle_free(h: *mut c_void);
-    fn oracle_set_gpr(h: *mut c_void, n: u32, value: u64);
-    fn oracle_get_gpr(h: *mut c_void, n: u32) -> u64;
-    fn oracle_set_pc(h: *mut c_void, value: u64);
-    fn oracle_get_pc(h: *mut c_void) -> u64;
-    fn oracle_set_nzcv(h: *mut c_void, flags: u32);
-    fn oracle_get_nzcv(h: *mut c_void) -> u32;
-    fn oracle_step(h: *mut c_void, opcode: u32);
-    fn oracle_set_z(h: *mut c_void, n: u32, chunk: u32, value: u64);
-    fn oracle_get_z(h: *mut c_void, n: u32, chunk: u32) -> u64;
-    fn oracle_set_p(h: *mut c_void, n: u32, chunk: u32, value: u64);
-    fn oracle_get_p(h: *mut c_void, n: u32, chunk: u32) -> u64;
-    fn oracle_get_vl(h: *mut c_void) -> u64;
-    fn oracle_set_fpcr(h: *mut c_void, value: u64);
-    fn oracle_get_fpcr(h: *mut c_void) -> u64;
-    fn oracle_set_fpsr(h: *mut c_void, value: u64);
-    fn oracle_get_fpsr(h: *mut c_void) -> u64;
-    fn oracle_set_za(h: *mut c_void, row: u32, chunk: u32, value: u64);
-    fn oracle_get_za(h: *mut c_void, row: u32, chunk: u32) -> u64;
-    fn oracle_get_svcr(h: *mut c_void) -> u32;
-    fn oracle_set_sp(h: *mut c_void, value: u64);
-    fn oracle_get_sp(h: *mut c_void) -> u64;
-    fn oracle_get_pstate(h: *mut c_void) -> u64;
-    fn oracle_set_pstate(h: *mut c_void, value: u64);
-    fn oracle_set_ffr(h: *mut c_void, chunk: u32, value: u64);
-    fn oracle_get_ffr(h: *mut c_void, chunk: u32) -> u64;
-    fn oracle_set_zt0(h: *mut c_void, chunk: u32, value: u64);
-    fn oracle_get_zt0(h: *mut c_void, chunk: u32) -> u64;
-    fn oracle_set_tpidr_el0(h: *mut c_void, value: u64);
-    fn oracle_get_tpidr_el0(h: *mut c_void) -> u64;
-    fn oracle_set_tpidrro_el0(h: *mut c_void, value: u64);
-    fn oracle_get_tpidrro_el0(h: *mut c_void) -> u64;
-    fn oracle_get_esr_el3(h: *mut c_void) -> u64;
-    fn oracle_get_elr_el3(h: *mut c_void) -> u64;
-    fn oracle_get_far_el3(h: *mut c_void) -> u64;
-    fn oracle_read_mem(h: *mut c_void, addr: u64) -> u8;
-    fn oracle_write_mem(h: *mut c_void, addr: u64, byte: u8);
-    fn oracle_is_mapped(h: *mut c_void, addr: u64) -> bool;
+    fn sailarm_new() -> *mut c_void;
+    fn sailarm_free(h: *mut c_void);
+    fn sailarm_set_gpr(h: *mut c_void, n: u32, value: u64);
+    fn sailarm_get_gpr(h: *mut c_void, n: u32) -> u64;
+    fn sailarm_set_pc(h: *mut c_void, value: u64);
+    fn sailarm_get_pc(h: *mut c_void) -> u64;
+    fn sailarm_set_nzcv(h: *mut c_void, flags: u32);
+    fn sailarm_get_nzcv(h: *mut c_void) -> u32;
+    fn sailarm_step(h: *mut c_void, opcode: u32);
+    fn sailarm_set_z(h: *mut c_void, n: u32, chunk: u32, value: u64);
+    fn sailarm_get_z(h: *mut c_void, n: u32, chunk: u32) -> u64;
+    fn sailarm_set_p(h: *mut c_void, n: u32, chunk: u32, value: u64);
+    fn sailarm_get_p(h: *mut c_void, n: u32, chunk: u32) -> u64;
+    fn sailarm_get_vl(h: *mut c_void) -> u64;
+    fn sailarm_set_fpcr(h: *mut c_void, value: u64);
+    fn sailarm_get_fpcr(h: *mut c_void) -> u64;
+    fn sailarm_set_fpsr(h: *mut c_void, value: u64);
+    fn sailarm_get_fpsr(h: *mut c_void) -> u64;
+    fn sailarm_set_za(h: *mut c_void, row: u32, chunk: u32, value: u64);
+    fn sailarm_get_za(h: *mut c_void, row: u32, chunk: u32) -> u64;
+    fn sailarm_get_svcr(h: *mut c_void) -> u32;
+    fn sailarm_set_sp(h: *mut c_void, value: u64);
+    fn sailarm_get_sp(h: *mut c_void) -> u64;
+    fn sailarm_get_pstate(h: *mut c_void) -> u64;
+    fn sailarm_set_pstate(h: *mut c_void, value: u64);
+    fn sailarm_set_ffr(h: *mut c_void, chunk: u32, value: u64);
+    fn sailarm_get_ffr(h: *mut c_void, chunk: u32) -> u64;
+    fn sailarm_set_zt0(h: *mut c_void, chunk: u32, value: u64);
+    fn sailarm_get_zt0(h: *mut c_void, chunk: u32) -> u64;
+    fn sailarm_set_tpidr_el0(h: *mut c_void, value: u64);
+    fn sailarm_get_tpidr_el0(h: *mut c_void) -> u64;
+    fn sailarm_set_tpidrro_el0(h: *mut c_void, value: u64);
+    fn sailarm_get_tpidrro_el0(h: *mut c_void) -> u64;
+    fn sailarm_get_esr_el3(h: *mut c_void) -> u64;
+    fn sailarm_get_elr_el3(h: *mut c_void) -> u64;
+    fn sailarm_get_far_el3(h: *mut c_void) -> u64;
+    fn sailarm_read_byte(h: *mut c_void, addr: u64) -> u8;
+    fn sailarm_write_byte(h: *mut c_void, addr: u64, byte: u8);
+    fn sailarm_is_mapped(h: *mut c_void, addr: u64) -> bool;
 }
 
 pub const Z_BITS: usize = 2048;
@@ -80,8 +80,8 @@ unsafe impl Sync for Oracle {}
 impl Oracle {
     pub fn new() -> Self {
         let _g = model_lock();
-        let h = unsafe { oracle_new() };
-        assert!(!h.is_null(), "oracle_new returned null");
+        let h = unsafe { sailarm_new() };
+        assert!(!h.is_null(), "sailarm_new returned null");
         Oracle { h }
     }
 
@@ -89,39 +89,39 @@ impl Oracle {
     pub fn set_x(&mut self, n: u32, value: u64) {
         debug_assert!(n <= 31);
         let _g = model_lock();
-        unsafe { oracle_set_gpr(self.h, n, value) }
+        unsafe { sailarm_set_gpr(self.h, n, value) }
     }
 
     pub fn get_x(&self, n: u32) -> u64 {
         debug_assert!(n <= 31);
         let _g = model_lock();
-        unsafe { oracle_get_gpr(self.h, n) }
+        unsafe { sailarm_get_gpr(self.h, n) }
     }
 
     pub fn set_pc(&mut self, value: u64) {
         let _g = model_lock();
-        unsafe { oracle_set_pc(self.h, value) }
+        unsafe { sailarm_set_pc(self.h, value) }
     }
 
     pub fn get_pc(&self) -> u64 {
         let _g = model_lock();
-        unsafe { oracle_get_pc(self.h) }
+        unsafe { sailarm_get_pc(self.h) }
     }
 
     /// Low 4 bits: bit3=N, bit2=Z, bit1=C, bit0=V.
     pub fn set_nzcv(&mut self, flags: u32) {
         let _g = model_lock();
-        unsafe { oracle_set_nzcv(self.h, flags & 0xf) }
+        unsafe { sailarm_set_nzcv(self.h, flags & 0xf) }
     }
 
     pub fn get_nzcv(&self) -> u32 {
         let _g = model_lock();
-        unsafe { oracle_get_nzcv(self.h) & 0xf }
+        unsafe { sailarm_get_nzcv(self.h) & 0xf }
     }
 
     pub fn step(&mut self, opcode: u32) {
         let _g = model_lock();
-        unsafe { oracle_step(self.h, opcode) }
+        unsafe { sailarm_step(self.h, opcode) }
     }
 
     /// Little-endian chunks (`data[0]` = bits 63:0); missing chunks zeroed.
@@ -131,7 +131,7 @@ impl Oracle {
         let _g = model_lock();
         for i in 0..Z_CHUNKS {
             let v = data.get(i).copied().unwrap_or(0);
-            unsafe { oracle_set_z(self.h, n, i as u32, v) }
+            unsafe { sailarm_set_z(self.h, n, i as u32, v) }
         }
     }
 
@@ -140,7 +140,7 @@ impl Oracle {
         let _g = model_lock();
         let mut out = [0u64; Z_CHUNKS];
         for (i, slot) in out.iter_mut().enumerate() {
-            *slot = unsafe { oracle_get_z(self.h, n, i as u32) };
+            *slot = unsafe { sailarm_get_z(self.h, n, i as u32) };
         }
         out
     }
@@ -150,7 +150,7 @@ impl Oracle {
         let _g = model_lock();
         for i in 0..P_CHUNKS {
             let v = data.get(i).copied().unwrap_or(0);
-            unsafe { oracle_set_p(self.h, n, i as u32, v) }
+            unsafe { sailarm_set_p(self.h, n, i as u32, v) }
         }
     }
 
@@ -159,7 +159,7 @@ impl Oracle {
         let _g = model_lock();
         let mut out = [0u64; P_CHUNKS];
         for (i, slot) in out.iter_mut().enumerate() {
-            *slot = unsafe { oracle_get_p(self.h, n, i as u32) };
+            *slot = unsafe { sailarm_get_p(self.h, n, i as u32) };
         }
         out
     }
@@ -167,7 +167,7 @@ impl Oracle {
     /// Effective VL in bits; 2048 at reset (`init_harness` requests the max).
     pub fn vl_bits(&self) -> u64 {
         let _g = model_lock();
-        unsafe { oracle_get_vl(self.h) }
+        unsafe { sailarm_get_vl(self.h) }
     }
 
     /// Set non-streaming SVE VL by programming `ZCR_EL3.LEN`. `bits` is
@@ -206,22 +206,22 @@ impl Oracle {
 
     pub fn set_fpcr(&mut self, value: u64) {
         let _g = model_lock();
-        unsafe { oracle_set_fpcr(self.h, value) }
+        unsafe { sailarm_set_fpcr(self.h, value) }
     }
 
     pub fn get_fpcr(&self) -> u64 {
         let _g = model_lock();
-        unsafe { oracle_get_fpcr(self.h) }
+        unsafe { sailarm_get_fpcr(self.h) }
     }
 
     pub fn set_fpsr(&mut self, value: u64) {
         let _g = model_lock();
-        unsafe { oracle_set_fpsr(self.h, value) }
+        unsafe { sailarm_set_fpsr(self.h, value) }
     }
 
     pub fn get_fpsr(&self) -> u64 {
         let _g = model_lock();
-        unsafe { oracle_get_fpsr(self.h) }
+        unsafe { sailarm_get_fpsr(self.h) }
     }
 
     pub fn set_za_row(&mut self, row: u32, data: &[u64]) {
@@ -229,7 +229,7 @@ impl Oracle {
         let _g = model_lock();
         for i in 0..Z_CHUNKS {
             let v = data.get(i).copied().unwrap_or(0);
-            unsafe { oracle_set_za(self.h, row, i as u32, v) }
+            unsafe { sailarm_set_za(self.h, row, i as u32, v) }
         }
     }
 
@@ -238,7 +238,7 @@ impl Oracle {
         let _g = model_lock();
         let mut out = [0u64; Z_CHUNKS];
         for (i, slot) in out.iter_mut().enumerate() {
-            *slot = unsafe { oracle_get_za(self.h, row, i as u32) };
+            *slot = unsafe { sailarm_get_za(self.h, row, i as u32) };
         }
         out
     }
@@ -247,18 +247,18 @@ impl Oracle {
     /// SMSTART (`0xD503477F`) / SMSTOP (`0xD503467F`) so side effects apply.
     pub fn svcr(&self) -> u32 {
         let _g = model_lock();
-        unsafe { oracle_get_svcr(self.h) }
+        unsafe { sailarm_get_svcr(self.h) }
     }
 
     /// Banked: follows PSTATE.SP/EL (SP_EL3 at reset).
     pub fn set_sp(&mut self, value: u64) {
         let _g = model_lock();
-        unsafe { oracle_set_sp(self.h, value) }
+        unsafe { sailarm_set_sp(self.h, value) }
     }
 
     pub fn get_sp(&self) -> u64 {
         let _g = model_lock();
-        unsafe { oracle_get_sp(self.h) }
+        unsafe { sailarm_get_sp(self.h) }
     }
 
     /// Packed PSTATE (LSB first): `[0]`=F `[1]`=I `[2]`=A `[3]`=D, `[5:4]`=BTYPE,
@@ -266,14 +266,14 @@ impl Oracle {
     /// `[13]`=SP(SPSel), `[14]`=ZA `[15]`=SM.
     pub fn get_pstate(&self) -> u64 {
         let _g = model_lock();
-        unsafe { oracle_get_pstate(self.h) }
+        unsafe { sailarm_get_pstate(self.h) }
     }
 
     /// Only the maskable bits are written; EL/SM/ZA are ignored (change those
     /// architecturally via ERET, SMSTART/SMSTOP).
     pub fn set_pstate(&mut self, value: u64) {
         let _g = model_lock();
-        unsafe { oracle_set_pstate(self.h, value) }
+        unsafe { sailarm_set_pstate(self.h, value) }
     }
 
     pub fn set_ffr(&mut self, data: &[u64]) {
@@ -281,7 +281,7 @@ impl Oracle {
         let _g = model_lock();
         for i in 0..P_CHUNKS {
             let v = data.get(i).copied().unwrap_or(0);
-            unsafe { oracle_set_ffr(self.h, i as u32, v) }
+            unsafe { sailarm_set_ffr(self.h, i as u32, v) }
         }
     }
 
@@ -289,7 +289,7 @@ impl Oracle {
         let _g = model_lock();
         let mut out = [0u64; P_CHUNKS];
         for (i, slot) in out.iter_mut().enumerate() {
-            *slot = unsafe { oracle_get_ffr(self.h, i as u32) };
+            *slot = unsafe { sailarm_get_ffr(self.h, i as u32) };
         }
         out
     }
@@ -299,7 +299,7 @@ impl Oracle {
         let _g = model_lock();
         for i in 0..ZT0_CHUNKS {
             let v = data.get(i).copied().unwrap_or(0);
-            unsafe { oracle_set_zt0(self.h, i as u32, v) }
+            unsafe { sailarm_set_zt0(self.h, i as u32, v) }
         }
     }
 
@@ -307,46 +307,46 @@ impl Oracle {
         let _g = model_lock();
         let mut out = [0u64; ZT0_CHUNKS];
         for (i, slot) in out.iter_mut().enumerate() {
-            *slot = unsafe { oracle_get_zt0(self.h, i as u32) };
+            *slot = unsafe { sailarm_get_zt0(self.h, i as u32) };
         }
         out
     }
 
     pub fn set_tpidr_el0(&mut self, value: u64) {
         let _g = model_lock();
-        unsafe { oracle_set_tpidr_el0(self.h, value) }
+        unsafe { sailarm_set_tpidr_el0(self.h, value) }
     }
 
     pub fn get_tpidr_el0(&self) -> u64 {
         let _g = model_lock();
-        unsafe { oracle_get_tpidr_el0(self.h) }
+        unsafe { sailarm_get_tpidr_el0(self.h) }
     }
 
     pub fn set_tpidrro_el0(&mut self, value: u64) {
         let _g = model_lock();
-        unsafe { oracle_set_tpidrro_el0(self.h, value) }
+        unsafe { sailarm_set_tpidrro_el0(self.h, value) }
     }
 
     pub fn get_tpidrro_el0(&self) -> u64 {
         let _g = model_lock();
-        unsafe { oracle_get_tpidrro_el0(self.h) }
+        unsafe { sailarm_get_tpidrro_el0(self.h) }
     }
 
     /// EL3 exception state, read-only. After a trapping step PC has vectored to
     /// VBAR_EL3+offset; ESR classifies, ELR holds the faulting PC, FAR the addr.
     pub fn esr_el3(&self) -> u64 {
         let _g = model_lock();
-        unsafe { oracle_get_esr_el3(self.h) }
+        unsafe { sailarm_get_esr_el3(self.h) }
     }
 
     pub fn elr_el3(&self) -> u64 {
         let _g = model_lock();
-        unsafe { oracle_get_elr_el3(self.h) }
+        unsafe { sailarm_get_elr_el3(self.h) }
     }
 
     pub fn far_el3(&self) -> u64 {
         let _g = model_lock();
-        unsafe { oracle_get_far_el3(self.h) }
+        unsafe { sailarm_get_far_el3(self.h) }
     }
 
     // Direct byte-addressed, little-endian access to this instance's memory —
@@ -356,25 +356,25 @@ impl Oracle {
     /// 0 if the address was never written.
     pub fn read_mem_byte(&self, addr: u64) -> u8 {
         let _g = model_lock();
-        unsafe { oracle_read_mem(self.h, addr) }
+        unsafe { sailarm_read_byte(self.h, addr) }
     }
 
     pub fn write_mem_byte(&mut self, addr: u64, byte: u8) {
         let _g = model_lock();
-        unsafe { oracle_write_mem(self.h, addr, byte) }
+        unsafe { sailarm_write_byte(self.h, addr, byte) }
     }
 
     pub fn read_mem(&self, addr: u64, buf: &mut [u8]) {
         let _g = model_lock();
         for (i, slot) in buf.iter_mut().enumerate() {
-            *slot = unsafe { oracle_read_mem(self.h, addr.wrapping_add(i as u64)) };
+            *slot = unsafe { sailarm_read_byte(self.h, addr.wrapping_add(i as u64)) };
         }
     }
 
     pub fn write_mem(&mut self, addr: u64, data: &[u8]) {
         let _g = model_lock();
         for (i, &byte) in data.iter().enumerate() {
-            unsafe { oracle_write_mem(self.h, addr.wrapping_add(i as u64), byte) }
+            unsafe { sailarm_write_byte(self.h, addr.wrapping_add(i as u64), byte) }
         }
     }
 
@@ -393,7 +393,7 @@ impl Oracle {
     /// runtime's 16 MiB block, so one write maps its whole containing block.
     pub fn is_mapped(&self, addr: u64) -> bool {
         let _g = model_lock();
-        unsafe { oracle_is_mapped(self.h, addr) }
+        unsafe { sailarm_is_mapped(self.h, addr) }
     }
 
     pub fn snapshot(&self) -> CpuState {
@@ -414,7 +414,7 @@ impl Default for Oracle {
 impl Drop for Oracle {
     fn drop(&mut self) {
         let _g = model_lock();
-        unsafe { oracle_free(self.h) }
+        unsafe { sailarm_free(self.h) }
     }
 }
 

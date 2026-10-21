@@ -29,12 +29,12 @@ register, flag and memory effect against your own emulator/JIT/decoder.
 sail-arm/arm-v9.4-a  +  sail/harness.sail          (accessor + step wrappers)
         │  sail --cpp --c-no-main  (+ scripts/fix_cpp_model.py)
         ▼
-  model.cpp / model.h   (class model::Model — ALL architectural state
+  model.cpp / model.h   (class sail_aarch64::Model — ALL architectural state
         │                is instance members; ~166 MB, vendored as 18 MB .gz)
         │  cc (build.rs): model.cpp + model_missing.cpp + csrc/shim.cpp [C++20]
         │                 + patched Sail C runtime (bundled mini-gmp)   [C]
         ▼
-   libsailarm.a  ──extern "C" handle ABI──►  src/lib.rs  (Oracle: Send+Sync)
+   sailarm_{model,runtime} static libs ──extern "C" sailarm_* ABI──► src/lib.rs (Oracle: Send+Sync)
 ```
 
 Key decisions:
@@ -48,6 +48,11 @@ Key decisions:
 - **Chunked 64-bit register ABI**: wide registers (Z/P/FFR/ZA/ZT0, up to
   2048 bits) cross the FFI as plain `u64` chunks over the architectural
   storage — no GMP types in the interface.
+- **Links next to other Sail oracles**: every exported name starts with
+  `sailarm_` and the model lives in namespace `sail_aarch64`, so
+  sail-riscv-oracle and hybrid-x86-oracle (each with its own Sail runtime and
+  mini-gmp) can link into the same binary — see
+  [Linking next to other Sail oracles](#linking-next-to-other-sail-oracles).
 - **Reset state**: highest EL (EL3), MMU off (flat physical memory), SVE +
   FP + SME enabled untrapped, VL = SVL = 2048 bits. One `step` = decode +
   execute + PC advance (+4 or branch target); no instruction fetch from
@@ -152,9 +157,12 @@ Optional env switches:
 
 - `SAIL_SYSTEM_GMP=1` — keep the vendored runtime but link real libgmp
   (faster arbitrary-precision paths; needs gmp headers+lib).
-- `AARCH64_ORACLE_SAIL_MODEL_C` / `SAIL_LIB_DIR` — build against a freshly generated model
-  and/or an external (opam) runtime; that path needs system GMP + zlib like
-  upstream Sail (on Alpine/musl see the static-linking note in Step 3).
+- `AARCH64_ORACLE_SAIL_MODEL_C` — build against a freshly generated model
+  (Step 2), still with the vendored runtime.
+- `SAIL_LIB_DIR` — an external (opam) runtime; needs system GMP + zlib like
+  upstream Sail (on Alpine/musl see the static-linking note in Step 3). Not
+  usable with this crate's cpp-backend model (see Step 3), and its names are
+  not prefixed, so such a build cannot link next to other Sail oracles.
 
 Steps 1–2 below are **only** needed to regenerate `model.c` after editing
 `sail/harness.sail` (or to track a newer sail-arm); refresh the vendored copy
@@ -204,9 +212,11 @@ which `harness.sail` replaces). Our harness is appended **last**.
 
 Flags that matter beyond the Makefile's own C target:
 
-- `--cpp` — the C++ backend: emits `class model::Model` with all
+- `--cpp` — the C++ backend: emits `class Model` with all
   architectural state as instance members (this is what makes multiple
   independent oracles per process possible);
+- `--cpp-namespace sail_aarch64` — the default namespace `model` is shared
+  by other Sail oracles and would clash at link time;
 - `--c-no-main`;
 - `--c-preserve <fn>` for **each** harness wrapper: since `main` is gone,
   nothing references them, and Sail's dead-code elimination silently drops
@@ -220,7 +230,7 @@ size — see `scripts/fix_cpp_model.py`'s docstring):
 ```sh
 cd sail-arm/arm-v9.4-a
 
-sail --cpp --c-no-main -O --Oconstant-fold --memo-z3 \
+sail --cpp --cpp-namespace sail_aarch64 --c-no-main -O --Oconstant-fold --memo-z3 \
     --c-preserve main \
     --c-preserve init_harness \
     --c-preserve set_gpr  --c-preserve get_gpr \
@@ -269,8 +279,7 @@ Gotchas observed in practice:
 cd /path/to/sail-aarch64-oracle
 export AARCH64_ORACLE_SAIL_MODEL_C=/path/to/sail-arm/arm-v9.4-a/cpp/model.cpp
 # Do NOT set SAIL_LIB_DIR: the cpp-backend model needs the sint/sub_vec_int
-# aliases that only exist in the patched vendored runtime. (SAIL_LIB_DIR
-# remains available for plain `sail -c` models against an opam runtime.)
+# aliases that only exist in the patched vendored runtime.
 
 cargo build
 cargo nextest run
@@ -311,7 +320,7 @@ To confirm the *generated* C symbols (for debugging the link step):
 ```sh
 nm -g model.c.o 2>/dev/null | grep -E 'zset_gpr|zstep_a64|model_init'
 # or after building:
-nm -g target/debug/build/*/out/libsailarm.a | grep zset_gpr
+nm -g target/debug/build/*/out/libsailarm_model.a | grep zset_gpr
 ```
 
 ---
@@ -398,6 +407,35 @@ observing exactly what instructions see — `direct_memory_access_matches_instru
 cross-checks the two paths. Reads of never-written addresses return 0 without
 allocating; `is_mapped(addr)` tells "wrote 0" apart from "never touched"
 (at the runtime's 16 MiB block granularity).
+
+## Linking next to other Sail oracles
+
+sail-riscv-oracle and hybrid-x86-oracle carry their own copies of the Sail
+runtime and mini-gmp with the same C names, and Sail models use the same
+global names. Here every exported name starts with `sailarm_`:
+
+- the shim API is named so directly (`sailarm_new`, `sailarm_step`, …);
+- the model's C++ namespace is `sail_aarch64` (Step 2's `--cpp-namespace`,
+  or `scripts/fix_cpp_model.py` for a model generated without it);
+- `csrc/sailarm_prefix.h`, force-included into every C/C++ file, renames the
+  rest (runtime, cJSON, mini-gmp, model globals such as `model_main`) with
+  `#define name sailarm_name`. With `SAIL_SYSTEM_GMP`, mini-gmp is not built
+  and gmp's own names are shared by all crates, so those are left alone.
+
+`tests/coexist/` (its own workspace, so plain `cargo test` skips it) links
+this crate with `../sail-riscv-oracle` and `../hybrid-x86-oracle` into one
+test binary.
+
+After any change that can add global C/C++ names (new Sail runtime, a
+regenerated model, new shim code), refresh the header from Git Bash on
+Windows MSVC and verify it (needs `llvm-objdump`; found on PATH, via
+`LLVM_OBJDUMP` or in `C:\LLVM\bin`):
+
+```sh
+sh scripts/gen_prefix_header.sh           # builds, lists the libs' global names, writes the header
+sh scripts/gen_prefix_header.sh --check   # rebuilds; fails if any global name lacks the sailarm_ prefix
+cd tests/coexist && cargo test            # links with the riscv and x86 oracles (slow first build)
+```
 
 ---
 

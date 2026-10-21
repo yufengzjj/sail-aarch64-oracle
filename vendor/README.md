@@ -7,8 +7,9 @@
   using the command in README Step 2 **followed by
   `scripts/fix_cpp_model.py`** (the cpp backend needs four mechanical fixes
   on this model, plus one for the model's zero-size MOPS stubs — see the
-  script's docstring). The model is a C++ class
-  (`model::Model`): all architectural state is per-instance, enabling
+  script's docstring; the script also renames the C++ namespace to
+  `sail_aarch64`). The model is a C++ class
+  (`sail_aarch64::Model`): all architectural state is per-instance, enabling
   multiple independent oracles per process. License: BSD-3-Clause-Clear
   (Arm Limited et al.; see the sail-arm repository LICENSE).
 - `sail-runtime/` — the Sail C runtime (`sail.c`, `rts.c`, `sail_failure.c`,
@@ -49,11 +50,12 @@ To regenerate after editing `sail/harness.sail`, follow README Step 2 (which
 ends with `fix_cpp_model.py`), then refresh with:
 
 ```sh
-gzip -9 -c /path/to/sail-arm/arm-v9.4-a/cpp/model.cpp > vendor/model.cpp.gz
+gzip -9 -n -c /path/to/sail-arm/arm-v9.4-a/cpp/model.cpp > vendor/model.cpp.gz
 cp /path/to/sail-arm/arm-v9.4-a/cpp/model.h \
    /path/to/sail-arm/arm-v9.4-a/cpp/model_missing.cpp vendor/
 ```
 
 (The runtime here is independent of the generated model — only re-copy
 `sail-runtime/` sources if you upgrade Sail itself, and then re-apply the
-patch hunks.)
+patch hunks.) After either, regenerate `csrc/sailarm_prefix.h` (README,
+"Linking next to other Sail oracles").
